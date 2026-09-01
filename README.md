@@ -1,4 +1,5 @@
-# Steltic Engineering Retrieval — Query File Manager (standards-free distribution)
+# Steltic Grok Bot - turn Grok Bot into your structural steel design assistant
+No external RAG required, everything is done inside Grok Bot
 
 Install package for a **Query file manager** Grok Bot: a non-vector (exact-lookup + BM25/FTS)
 retrieval system over structural-steel design specifications, plus the retrieval-plan skill for
