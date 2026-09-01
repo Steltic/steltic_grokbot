@@ -1,0 +1,4 @@
+* text=auto
+*.sqlite binary
+*.py text eol=lf
+*.md text

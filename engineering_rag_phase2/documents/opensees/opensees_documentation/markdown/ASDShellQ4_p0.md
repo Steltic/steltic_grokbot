@@ -1,0 +1,153 @@
+<!-- chunk_id: ASDShellQ4_p0 | collection: opensees_documentation -->
+<!-- meta: {
+ "source": "opensees_documentation.md",
+ "source_url": "https://OpenSees.github.io/OpenSeesDocumentation/user/manual/model/elements/ASDShellQ4.html",
+ "title": "3.1.10.14. ASDShellQ4 Element",
+ "category": "command_manual",
+ "manual_group": "model",
+ "command": "ASDShellQ4",
+ "doc_section": "user/manual/model/elements",
+ "rel_path": "user/manual/model/elements/ASDShellQ4.html",
+ "part_index": 0,
+ "part_count": 1,
+ "char_count": 9714,
+ "word_count": 1210,
+ "has_code": true,
+ "has_table": true
+} -->
+
+## 3.1.10.14. ASDShellQ4 Element
+
+This command is used to construct an ASDShellQ4 element object. The ASDShellQ4 element is a 4-node general purpose thick shell element with the following features:
+
+1. The membrane behavior is enhanced with the **AGQ6-I** [ChenEtAl2004] formulation, which makes the element almost insensitive to geometry distortion, as opposed to standard iso-parametric elements.
+2. The drilling DOF is treated with the **Hughes-Brezzi** [[HughesEtAl1989]](https://OpenSees.github.io/OpenSeesDocumentation/user/manual/model/elements/ASDShellT3.html#hughesetal1989) formulation, with special care to avoid membrane locking, using a 1 point quadrature plus stabilization. This formulation constrains the drilling DOFs to the rigid body rotation via a penalty parameter as a function of the initial in-plane shear modulus. However, when using strain-softening materials, this (elastic) constraint may overstiffen the element as the in-plane shear modulus degrades. As a remedy in such a situation, the user can choose to make this constraint non-linear.
+3. The plate bending part is treated using the **MITC4** [DvorkinEtAl1984] [BatheEtAl1985] formulation, to avoid the well known transverse shear locking behavior of thick plate elements.
+4. It can be used to model both **flat** and **warped** geometries.
+5. Kinematics can be either **linear** or **corotational**. The corotational kinematics is based on the work of Felippa et al., i.e. the **EICR** [[Felippa2000]](https://OpenSees.github.io/OpenSeesDocumentation/user/manual/model/elements/ASDShellT3.html#felippa2000) [[FelippaEtAl2005]](https://OpenSees.github.io/OpenSeesDocumentation/user/manual/model/elements/ASDShellT3.html#felippaetal2005) (Element Independent Corotational formulation). Finite rotations are treated with Quaternions.
+6. It uses a full 2x2 Gauss quadrature, so it has a total of 4 integration points.
+
+**element ASDShellQ4 $eleTag $n1 $n2 $n3 $n4 $secTag <-corotational> <-noeas> <-drillingStab $drillingStab> <-drillingNL> <-damp $dampTag> <-local $x1 $x2 $x3>**
+
+| Argument | Type | Description |
+| --- | --- | --- |
+| $eleTag | *integer* | unique integer tag identifying element object |
+| $n1 $n2 $n3 $n4 | 4 *integer* | the four nodes defining the element (-ndm 3 -ndf 6) |
+| $secTag | *integer* | unique integer tag associated with previously-defined SectionForceDeformation object |
+| -corotational | *string* | optional flag, if provided, the element uses non-linear kinematics, suitable for large displacement/rotation problems |
+| -noeas | *string* | optional flag, if provided, the membrane behavior will not be enhanced with the AGQ6-I enhanced assumed strain formulation. |
+| -drillingStab $drillingStab | *string* + *float* | optional flag, if provided, the user can specify the stabilization parameter $drillingStab to stabilize the 1-point quadrature drilling DOF formulation (default = 0.01). |
+| -drillingNL | *string* | optional flag, if provided, the Hughes-Brezzi drilling DOF formulation considers the non-linear behavior of the section. |
+| -damp $dampTag | *string* + *integer* | optional, to activate elemental damping as per [elementalDamping](https://OpenSees.github.io/OpenSeesDocumentation/user/manual/model/damping/elementalDamping.html#elementaldamping) |
+| -local $x1 $x2 $x3 | *string* + 3 *float* | optional, if provided it will be used as the local-x axis of the element (otherwise the default local X will be the direction of the 1-2 side). Note: it will be automatically normalized and projected onto the element plane. It must not be zero or parallel to the shell’s normal vector. |
+
+Fig. 3.1.10.15 Nodes, Gauss points, local coordinate system, warped and flat geometry
+
+Note
+
+Valid queries to the ASDShellQ4 element when creating an ElementRecorder object are:
+
+- **‘**force**’, ‘**forces**’, ‘**globalForce**’, or ‘**globalForces**’:**
+
+  > - Internal forces at the element’s nodes.
+  > - Orientation: global coordinate system.
+  > - Size: 24 columns of data, 6 components for each one of the 4 nodes.
+- **‘**material $secTag $secArg1 … $secArgN**’:**
+
+  > - Section response at section **$secTag**
+  > - **$secTag** is the 1-based index of the integration point (1 to 4).
+  > - ‘**$secArg1 … $secArgN**’ are the arguments required by the SectionDeformationObject at the requested integration point.
+
+Example 1 - Cantilever Bending Roll-up (corotational)
+
+A Cantilever beam is subjected to a total end-moment about the Y axis \(M_y = n 2 \pi EI/L\), where \(n\) is the number of rotations (2 in this example).
+
+[`figures/ASDShellQ4/ASDShellQ4_Example_GNL_BendingRollUp.py`](https://OpenSees.github.io/OpenSeesDocumentation/_downloads/cbe04bb38db2df63620826f3b66d227a/ASDShellQ4_Example_GNL_BendingRollUp.py)
+
+Example 2
+
+1. **Tcl Code**
+
+```
+# set up a 3D-6DOFs model
+model Basic -ndm 3 -ndf 6
+node 1  0.0  0.0 0.0
+node 2  1.0  0.0 0.0
+node 3  1.0  1.0 0.0
+node 4  0.0  1.0 0.0
+
+# create a fiber shell section with 4 layers of material 1
+# each layer has a thickness = 0.025
+nDMaterial ElasticIsotropic  1  1000.0  0.2
+section LayeredShell  11  4   1 0.025   1 0.025   1 0.025   1 0.025
+
+# create the shell element using the small displacements/rotations assumption
+element ASDShellQ4  1  1 2 3 4  11
+# or you can use the corotational flag for large displacements/rotations (geometric nonlinearity)
+element ASDShellQ4  1  1 2 3 4  11 -corotational
+
+# record global forces at element nodes (24 columns, 6 for each node)
+recorder Element  -xml  force_out.xml  -ele  1  force
+# record local section forces at gauss point 1 (8 columns: | 3 membrane | 3 bending | 2 transverse shear |)
+# note: gauss point index is 1-based
+recorder Element  -xml  force_gp1_out.xml  -ele  1  material  1  force
+# record local stresses at fiber 1 of gauss point 1 (5 columns: Szz is neglected (0) )
+# note: fiber index is 1-based (while in beams it is 0-based!)
+recorder Element  -xml  stress_gp1_fib0_out.xml  -ele  1  material  1  fiber 1 stress
+```
+
+1. **Python Code**
+
+```
+# set up a 3D-6DOFs model
+model('Basic', '-ndm', 3, '-ndf', 6)
+node(1, 0.0, 0.0, 0.0)
+node(2, 1.0, 0.0, 0.0)
+node(3, 1.0, 1.0, 0.0)
+node(4, 0.0, 1.0, 0.0)
+
+# create a fiber shell section with 4 layers of material 1
+# each layer has a thickness = 0.025
+nDMaterial('ElasticIsotropic', 1, 1000.0, 0.2)
+section('LayeredShell', 11, 4,  1,0.025,  1,0.025,  1,0.025,  1,0.025)
+
+# create the shell element using the small displacements/rotations assumption
+element('ASDShellQ4', 1, 1,2,3,4, 11)
+# or you can use the corotational flag for large displacements/rotations (geometric nonlinearity)
+# element('ASDShellQ4', 1, 1,2,3,4, 11, '-corotational')
+
+# record global forces at element nodes (24 columns, 6 for each node)
+recorder('Element', '-xml', 'force_out.xml', '-ele', 1, 'force')
+# record local section forces at gauss point 1 (8 columns: | 3 membrane | 3 bending | 2 transverse shear |)
+# note: gauss point index is 1-based
+recorder('Element', '-xml', 'force_gp1_out.xml', '-ele', 1, 'material', '1', 'force')
+# record local stresses at fiber 1 of gauss point 1 (5 columns: Szz is neglected (0) )
+# note: fiber index is 1-based (while in beams it is 0-based!)
+recorder('Element', '-xml', 'stress_gp1_fib0_out.xml', '-ele', 1, 'material', '1', 'fiber', '1', 'stress')
+```
+
+Code Developed by: **Massimo Petracca** at ASDEA Software, Italy.
+
+**ChenEtAl2004**
+
+> Chen, Xiao-Ming, et al. “Membrane elements insensitive to distortion using the quadrilateral area coordinate method.” Computers & Structures 82.1 (2004): 35-54. ([Link to article](http://www.paper.edu.cn/scholar/showpdf/MUT2ANwINTT0Ax5h))
+
+**HughesEtAl1989**
+
+> Hughes, Thomas JR, and F. Brezzi. “On drilling degrees of freedom.” Computer methods in applied mechanics and engineering 72.1 (1989): 105-121. ([Link to article](https://www.sciencedirect.com/science/article/pii/0045782589901242))
+
+**DvorkinEtAl1984**
+
+> Dvorkin, Eduardo N., and Klaus-Jurgen Bathe. “A continuum mechanics based four-node shell element for general non-linear analysis.” Engineering computations (1984). ([Link to article](https://www.researchgate.net/profile/Eduardo_Dvorkin/publication/235313212_A_Continuum_mechanics_based_four-node_shell_element_for_general_nonlinear_analysis/links/00b7d52611d8813ffe000000.pdf))
+
+**BatheEtAl1985**
+
+> Bathe, Klaus-Jurgen, and Eduardo N. Dvorkin. “A four-node plate bending element based on Mindlin/Reissner plate theory and a mixed interpolation.” International Journal for Numerical Methods in Engineering 21.2 (1985): 367-383. ([Link to article](http://www.simytec.com/docs/Short_communicaion_%20four_node_plate.pdf))
+
+**Felippa2000**
+
+> Felippa, Carlos A. “A systematic approach to the element-independent corotational dynamics of finite elements”. Technical Report CU-CAS-00-03, Center for Aerospace Structures, 2000. ([Link to article](https://d1wqtxts1xzle7.cloudfront.net/40660892/A_Systematic_Approach_to_the_Element-Ind20151205-15144-36jazx.pdf?1449356169=&response-content-disposition=inline%3B+filename%3DA_Systematic_Approach_to_the_Element_Ind.pdf&Expires=1611329637&Signature=DTV4RrGLOp4AWynE4kpUPHDNDuazgbqhI6KU1LR7jMBG6sqtx8McLgll918M3CeyBsjBjb7bUTz4ZVGJaoaq0B9Orhr4FVy0AMxrHlSbaTk8lnAXduaOPt~hsbJbiC5PXjSeKzYuT-8-chgyQvaB1gPlUwZ4zTBVJZocbr~Jh0zpTNF2b846iHBu9NQ2qfD5yTciVxMFjoRvOrb4H4AtVgtU~kM9TsiszQa6Vq8Amf~DivjfyB9~v7zgwiwm65PCcErFM8llNev~F1btwqNbSNJ62It7eWgMbkFe92xs6FmOkAIE8tmXnhb1tpUsCjW4kwmVCYcSAsYO4YAyj~6wig__&Key-Pair-Id=APKAJLOHF5GGSLRBV4ZA))
+
+**FelippaEtAl2005**
+
+> Felippa, Carlos A., and Bjorn Haugen. “A unified formulation of small-strain corotational finite elements: I. Theory.” Computer Methods in Applied Mechanics and Engineering 194.21-24 (2005): 2285-2335. ([Link to article](http://www.cntech.com.cn/down/h000/h21/attach200903311026030.pdf))

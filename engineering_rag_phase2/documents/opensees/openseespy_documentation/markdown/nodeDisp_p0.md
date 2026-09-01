@@ -1,0 +1,27 @@
+<!-- chunk_id: nodeDisp_p0 | collection: openseespy_documentation -->
+<!-- meta: {
+ "source": "openseespy",
+ "source_file": "openseespy_documentation.md",
+ "source_url": "https://openseespydoc.readthedocs.io/en/latest/src/nodeDisp.html",
+ "title": "6.15. nodeDisp command",
+ "category": "general",
+ "command": "nodeDisp",
+ "doc_section": "src",
+ "rel_path": "src/nodeDisp.html",
+ "part_index": 0,
+ "part_count": 1,
+ "char_count": 387,
+ "word_count": 50,
+ "has_code": false,
+ "has_table": true
+} -->
+
+## 6.15. nodeDisp command
+
+**nodeDisp(*nodeTag*, *dof=-1*)**
+
+Returns the current displacement at a specified node.
+
+| `nodeTag` ([int](https://docs.python.org/3/library/functions.html#int)) | node tag. |
+| --- | --- |
+| `dof` ([int](https://docs.python.org/3/library/functions.html#int)) | specific dof at the node (1 through ndf), (optional), if no `dof` is provided, a list of values for all dofs is returned. |

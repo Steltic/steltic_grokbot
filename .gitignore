@@ -1,0 +1,16 @@
+# NEVER commit copyrighted specification content (see NOTICE.md)
+standards/
+converted/
+documents/standards/
+**/documents/standards/
+search/spec_fts.sqlite
+**/spec_fts.sqlite
+queue/
+
+# environments & caches
+.venv/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db

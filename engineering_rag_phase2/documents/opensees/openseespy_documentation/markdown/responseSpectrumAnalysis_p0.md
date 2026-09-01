@@ -1,0 +1,119 @@
+<!-- chunk_id: responseSpectrumAnalysis_p0 | collection: openseespy_documentation -->
+<!-- meta: {
+ "source": "openseespy",
+ "source_file": "openseespy_documentation.md",
+ "source_url": "https://openseespydoc.readthedocs.io/en/latest/src/responseSpectrumAnalysis.html",
+ "title": "5.11. responseSpectrumAnalysis Command",
+ "category": "analysis",
+ "command": "responseSpectrumAnalysis",
+ "doc_section": "src",
+ "rel_path": "src/responseSpectrumAnalysis.html",
+ "part_index": 0,
+ "part_count": 1,
+ "char_count": 7110,
+ "word_count": 924,
+ "has_code": true,
+ "has_table": true
+} -->
+
+## 5.11. responseSpectrumAnalysis Command
+
+This command is used to perform a response spectrum analysis.
+
+The response spectrum analysis performs N linear analysis steps, where N is the number of eigenvalues requested in a previous call to [eigen command](https://openseespydoc.readthedocs.io/en/latest/src/eigen.html).
+
+For each analysis step, it computes the modal displacements. When the i-th analysis step is complete, all previously defined recorders will be called, so they will record all the results requested by the user, pertaining to the current modal displacements.
+
+The modal combination of these modal displacements (and derived results such as beam forces) is up to the user, and can be easily done via Python scripting.
+
+The command can be called in two different ways, depending on how you store the Tn/Sa (response spectrum function) values.
+
+They can be either stored in a timeSeries …
+
+**responseSpectrumAnalysis(*tsTag*, *direction*, *<'-scale'*, *scale>*, *<'-mode'*, *mode>*)**
+
+… or in two lists
+
+**responseSpectrumAnalysis(*direction*, *'-Tn'*, *Tn*, *'-Sa'*, *Sa*, *<'-scale '*, *scale>*, *<'-mode'*, *mode>*)**
+
+| Argument | Type | Description |
+| --- | --- | --- |
+| `tsTag` | ([int](https://docs.python.org/3/library/functions.html#int)) | The tag of a previously defined [timeSeries commands](https://openseespydoc.readthedocs.io/en/latest/src/timeSeries.html). This list stores the `Tn` and `Sa` values. If you want to use the timeSeries, you cannot specify the `'-Tn'` and `'-Sa'` options |
+| `'-Tn'` | ([str](https://docs.python.org/3/library/stdtypes.html#str)) | Tells the command to use the `Tn` list, instead of the timeSeries, to get the periods of the response spectrum function |
+| `Tn` | ([list](https://docs.python.org/3/library/stdtypes.html#list) ([float](https://docs.python.org/3/library/functions.html#float))) | The list of periods of the response spectrum function |
+| `'-Sa'` | ([str](https://docs.python.org/3/library/stdtypes.html#str)) | Tells the command to use the `Sa` list, instead of the timeSeries, to get the accelerations of the response spectrum function |
+| `Sa` | ([list](https://docs.python.org/3/library/stdtypes.html#list) ([float](https://docs.python.org/3/library/functions.html#float))) | The list of accelerations of the response spectrum function |
+| `direction` | ([int](https://docs.python.org/3/library/functions.html#int)) | The 1-based index of the excited DOF (1 to 3 for 2D problems, or 1 to 6 for 3D problems). |
+| `'-scale'` | ([str](https://docs.python.org/3/library/stdtypes.html#str)) | Tells the command to use a user-defined scale factor for the computed modal displacements. Not used, placeholder for future implementation. |
+| `scale` | ([float](https://docs.python.org/3/library/functions.html#float)) | User-defined scale factor for the computed modal displacements. Not used, placeholder for future implementation. |
+| `'-mode'` | ([str](https://docs.python.org/3/library/stdtypes.html#str)) | Tells the command to compute the modal displacements for just 1 specified mode (by default all modes are processed). |
+| `mode` | ([int](https://docs.python.org/3/library/functions.html#int)) | The 1-based index of the unique mode to process. |
+
+Note
+
+- This command can be used only if a previous call to [eigen command](https://openseespydoc.readthedocs.io/en/latest/src/eigen.html) and [modalProperties Command](https://openseespydoc.readthedocs.io/en/latest/src/modalProperties.html) has been performed.
+- It computes only the modal displacements, any modal combination is up to the user.
+- The scale factor (`'-scale', scale`) for the output modal displacements is not used now, and it’s there for future implementations. When your model is linear elastic there is no need to use this option. It will be useful in future when we will allow using this command on a nonlinear model as a **linear perturbation** about a certain nonlinear state. In that case, the scale factor can be set to a very small number, so that the computed modal displacements will be very small (linear perturbation) and will not alter the nonlinear state of your model. Then the inverse of the scale factor can be used to post-multiply any result for post-processing.
+
+#### 5.11.1. Theory
+
+Once the eigenvalue problem ([eigen command](https://openseespydoc.readthedocs.io/en/latest/src/eigen.html)) has been solved, and once the modal properties ([modalProperties Command](https://openseespydoc.readthedocs.io/en/latest/src/modalProperties.html)) have been computed, the modal displacements \(U\) for mode \(i\) at node \(n\) and DOF \(j\) is given by
+
+\[U_{ij}^n = \frac{\Phi_{ij}^n \cdot MPF_{ij} \cdot RSf\left(T_i\right)}{\lambda_i}\]
+
+where:
+
+> - \(\lambda_i\) is the eigenvalue
+> - \(\Phi_{ij}^n\) is the eigenvector
+> - \(MPF_{ij}\) is the modal participation factor
+> - \(RSf\left(T_i\right)\) is the response spectrum function value at period \(T_i\)
+> - and \(T_i\) is the period \(\frac{2\pi}{\sqrt{\lambda_i}}\)
+
+Example 1: Simple call
+
+The following example shows how to call the responseSpectrumAnalysis command for all modes, using the time series 1 (or lists Tn and Sa) along the DOF 1 (Ux)
+
+1. **Using timeSeries**
+
+```
+tsTag = 1 # use the timeSeries 1 as response spectrum function
+direction = 1 # excited DOF = Ux
+responseSpectrumAnalysis(tsTag, direction)
+```
+
+1. **Using lists**
+
+```
+Tn = [0.0 0.1 0.4 .... ] # the periods
+Sa = [1.9 3.7 4.9 .... ] # the accelerations
+responseSpectrumAnalysis(direction, '-Tn', *Tn, '-Sa', *Sa)
+```
+
+Example 2: Iterative call
+
+The following example shows how to call the responseSpectrumAnalysis command for 1 mode at a time, using the time series 1 along the DOF 1 (Ux)
+
+```
+tsTag = 1 # use the timeSeries 1 as response spectrum function
+direction = 1 # excited DOF = Ux
+for i in range(num_modes):
+   responseSpectrumAnalysis(tsTag, direction, '-mode', i+1)
+   # grab your results here for the i-th modal displacements
+```
+
+Example 3: Complete Structural Example
+
+The following example show a simple 1-bay 2-story building with rigid diaphragms. Units are **Newton** and **meters**.
+
+It shows how to:
+
+> - call the [eigen command](https://openseespydoc.readthedocs.io/en/latest/src/eigen.html) to extract 7 modes of vibration
+> - call the [modalProperties Command](https://openseespydoc.readthedocs.io/en/latest/src/modalProperties.html) to generate the report with modal properties
+> - call the responseSpectrumAnalysis Command to compute the modal displacements and section forces
+>   *  in a first example the responseSpectrumAnalysis Command is called for all modes. Results are obtained from a recorder after the analysis.
+>   *  in a second example the responseSpectrumAnalysis Command is called in a for-loop mode-by-mode. Results are obtained within the for-loop usin the [eleResponse command](https://openseespydoc.readthedocs.io/en/latest/src/eleResponse.html)
+> - do a CQC modal combination
+
+[`responseSpectrumAnalysisExample.py`](https://openseespydoc.readthedocs.io/en/latest/_downloads/70b0bf3c3f461ea4b447a406d2884112/responseSpectrumAnalysisExample.py)
+
+Code Developed by: **Massimo Petracca** at ASDEA Software, Italy

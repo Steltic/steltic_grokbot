@@ -1,0 +1,38 @@
+<!-- chunk_id: bbarQuadUP_p0 | collection: openseespy_documentation -->
+<!-- meta: {
+ "source": "openseespy",
+ "source_file": "openseespy_documentation.md",
+ "source_url": "https://openseespydoc.readthedocs.io/en/latest/src/bbarQuadUP.html",
+ "title": "4.2.11.3. BbarQuad u-p Element",
+ "category": "element",
+ "command": "bbarQuadUP",
+ "doc_section": "src",
+ "rel_path": "src/bbarQuadUP.html",
+ "part_index": 0,
+ "part_count": 1,
+ "char_count": 2146,
+ "word_count": 230,
+ "has_code": false,
+ "has_table": true
+} -->
+
+## 4.2.11.3. BbarQuad u-p Element
+
+bbarQuadUP is a four-node plane-strain mixed volume/pressure element, which uses a tri-linear isoparametric formulation. This element is implemented for simulating dynamic response of solid-fluid fully coupled material, based on Biot’s theory of porous medium. Each element node has 3 degrees-of-freedom (DOF): DOF 1 and 2 for solid displacement (u) and DOF 3 for fluid pressure (p).
+
+**element(*'bbarQuadUP'*, *eleTag*, **eleNodes*, *thick*, *matTag*, *bulk*, *fmass*, *hPerm*, *vPerm*, *<b1=0*, *b2=0*, *t=0>*)**
+
+| `eleTag` ([int](https://docs.python.org/3/library/functions.html#int)) | unique element object tag |
+| --- | --- |
+| `eleNodes` ([list](https://docs.python.org/3/library/stdtypes.html#list) ([int](https://docs.python.org/3/library/functions.html#int))) | a list of four element nodes in counter-clockwise order |
+| `thick` ([float](https://docs.python.org/3/library/functions.html#float)) | Element thickness |
+| `matTag` ([int](https://docs.python.org/3/library/functions.html#int)) | Tag of an NDMaterial object (previously defined) of which the element is composed |
+| `bulk` ([float](https://docs.python.org/3/library/functions.html#float)) | Combined undrained bulk modulus Bc relating changes in pore pressure and volumetric strain, may be approximated by: \(B_c \approx B_f/n\) where \(B_f\) is the bulk modulus of fluid phase (\(2.2\times 10^6\) kPa (or \(3.191\times 10^5\) psi) for water), and n the initial porosity. |
+| `fmass` ([float](https://docs.python.org/3/library/functions.html#float)) | Fluid mass density |
+| `hPerm`, `vPerm` ([float](https://docs.python.org/3/library/functions.html#float)) | Permeability coefficient in horizontal and vertical directions respectively. |
+| `b1`, `b2` ([float](https://docs.python.org/3/library/functions.html#float)) | Optional gravity acceleration components in horizontal and vertical directions respectively (defaults are 0.0) |
+| `t` ([float](https://docs.python.org/3/library/functions.html#float)) | Optional uniform element normal traction, positive in tension (default is 0.0) |
+
+See also
+
+[Notes](http://opensees.berkeley.edu/wiki/index.php/BbarQuad_u-p_Element)

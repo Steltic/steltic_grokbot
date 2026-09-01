@@ -1,0 +1,72 @@
+[
+  {
+    "collection": "opensees",
+    "group": "opensees",
+    "chunks": 540,
+    "source_file": "openseespy_documentation.jsonl.gz",
+    "sha256": "c15c4f8dd04907d2ced30a5a8b972c5b03309c0f8baacbcb689970d15f2ad1f9",
+    "authoritative": false,
+    "note": "distributable (no copyright restriction); examples/templates are NOT authoritative — specifications govern",
+    "id": "openseespy_documentation",
+    "source_collection": "openseespy_documentation",
+    "corpus": "opensees",
+    "edition": null,
+    "part": "n/a"
+  },
+  {
+    "collection": "opensees",
+    "group": "opensees",
+    "chunks": 348,
+    "source_file": "opensees_documentation.jsonl.gz",
+    "sha256": "a23f5181e771f592f45431ec2a69262553379ed58feefef91642f1422d79575a",
+    "authoritative": false,
+    "note": "distributable (no copyright restriction); examples/templates are NOT authoritative — specifications govern",
+    "id": "opensees_documentation",
+    "source_collection": "opensees_documentation",
+    "corpus": "opensees",
+    "edition": null,
+    "part": "n/a"
+  },
+  {
+    "collection": "opensees",
+    "group": "opensees",
+    "chunks": 49,
+    "source_file": "opensees_buildings_3d.jsonl.gz",
+    "sha256": "f972d3d7deeb5480742f21b497381a5be2f259828529212ccdeb8be12a6f0aa7",
+    "authoritative": false,
+    "note": "distributable (no copyright restriction); examples/templates are NOT authoritative — specifications govern",
+    "id": "opensees_buildings_3d",
+    "source_collection": "opensees_buildings_3d",
+    "corpus": "opensees",
+    "edition": null,
+    "part": "n/a"
+  },
+  {
+    "collection": "opensees",
+    "group": "opensees",
+    "chunks": 6,
+    "source_file": "opensees_building_templates.jsonl.gz",
+    "sha256": "e8371087ba945f6125e69b1b1a70edbab51d2baf71d52db2411a8f36327fa25c",
+    "authoritative": false,
+    "note": "distributable (no copyright restriction); examples/templates are NOT authoritative — specifications govern",
+    "id": "opensees_building_templates",
+    "source_collection": "opensees_building_templates",
+    "corpus": "opensees",
+    "edition": null,
+    "part": "n/a"
+  },
+  {
+    "collection": "examples",
+    "group": "examples",
+    "chunks": 169,
+    "source_file": "steel_design_examples.jsonl.gz",
+    "sha256": "8ff19bc628dbb8bed637cbe50a52d6f369aaf0495f7135b5f4a8c43092863df0",
+    "authoritative": false,
+    "note": "distributable (no copyright restriction); examples/templates are NOT authoritative — specifications govern",
+    "id": "steel_design_examples",
+    "source_collection": "steel_design_examples",
+    "corpus": "examples",
+    "edition": null,
+    "part": "n/a"
+  }
+]
