@@ -1,13 +1,8 @@
 # Steltic Grok Bot - turn Grok Bot into your structural steel design assistant
-No external RAG required, everything is done inside Grok Bot
 
-Install package for a **Query file manager** Grok Bot: a non-vector (exact-lookup + BM25/FTS)
-retrieval system over structural-steel design specifications, plus the retrieval-plan skill for
-the **HR Steel App** and **CFS Steel App** design bots.
+No external RAG required, everything is done inside Grok Bot.
 
-This repository is **standards-free**. The seven copyrighted specifications are **not** included
-in any form — no PDFs, no converted text, no spec indexes. Each site supplies its own licensed
-PDFs and converts them locally with the tooling here. See `NOTICE.md`.
+This repository is the **whole Steltic Grok Bot setup**: three bots that work together so you can start designing buildings. It is **standards-free**. The seven copyrighted specifications are **not** included in any form — no PDFs, no converted text, no spec indexes. Each site supplies its own licensed PDFs and converts them locally with the tooling here. See `NOTICE.md`.
 
 ## What's in the repo
 
@@ -28,17 +23,20 @@ LICENSE  NOTICE.md
 
 ## Install (new site)
 
-1. **Create the three Grok Bots:** `Query file manager`, `HR Steel App`, `CFS Steel App`.
-   Load `skills/Skill_querying_PACKAGED.md` into BOTH design bots **first**, then
-   `skills/Skill_query_file_manager_PACKAGED.md` into the Query file manager bot.
-2. **Clone onto the Query file manager computer** and copy into the working root:
+Create three Grok Bots: **Query file manager**, **HR Steel App**, **CFS Steel App**. Do them in this order. When the steps below are done, all three are ready to design buildings.
+
+### 1. Query file manager
+
+Load `skills/Skill_query_file_manager_PACKAGED.md` as a skill, then follow its first-run on that bot's computer.
+
+1. Clone this repo onto the Query file manager computer and copy into the working root:
    ```
-   git clone <this-repo> steltic-retrieval
+   git clone https://github.com/Steltic/steltic_grokbot.git steltic-retrieval
    mkdir -p /workspace/engineering_rag
    cp -r steltic-retrieval/scripts /workspace/engineering_rag/scripts
    cp -r steltic-retrieval/engineering_rag_phase2/. /workspace/engineering_rag/
    ```
-3. **Bootstrap the environment** (Docling pin **2.123.1**; see the skill for the
+2. Bootstrap the environment (Docling pin **2.123.1**; see the skill for the
    only-upgrade-with-revalidation rule):
    ```
    python3 -m venv /workspace/engineering_rag/.venv
@@ -47,12 +45,32 @@ LICENSE  NOTICE.md
    export TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata/
    export DOCLING_DEVICE=cpu
    ```
-4. **Supply the specs:** the user places their own licensed PDFs in their working-folder
-   `standards/` (they must own them — never fetch copies from unofficial sources).
-5. **Follow the first-run sequence in the Query file manager skill, in order** — convert ONE
-   document at a time (`convert_pdf.py` → `recover_image_pages.py` → `postprocess.py` →
+3. Supply the specs: place your own licensed PDFs in the working-folder
+   `standards/` (you must own them — never fetch copies from unofficial sources).
+4. Follow the first-run sequence in the Query file manager skill, in order — convert ONE
+   document at a time (`convert_pdf.py`, then `recover_image_pages.py`, then `postprocess.py`, then
    `validate.py` must PASS), then indexes/FTS/queue, then the gold probes, then HR and CFS
    query-test suites. Production buildings are blocked until both test suites close.
+
+### 2. HR Steel App — two prompts
+
+**Prompt 1.** Load `skills/Skill_querying_PACKAGED.md` as a skill.
+
+**Prompt 2.** Paste this into the bot:
+
+```
+Clone https://github.com/Steltic/steltic onto your computer. Install it per the README (Python 3.12, pip install -e . — openseespy needs native libs, install those too). Verify by running the app with model MOCK and confirming a design package appears. Then read contract/AGENT_START.md: for future design tasks you will follow that contract yourself — write cfg.py, run the engine via python in your terminal, fill the calc package, run consistency.check, and deliver report.html + viewer_3d.html. Let me know after you complete the MOCK tests, then Run the first example building end to end that way.
+```
+
+### 3. CFS Steel App — two prompts
+
+**Prompt 1.** Load `skills/Skill_querying_PACKAGED.md` as a skill (same file as HR).
+
+**Prompt 2.** Paste this into the bot:
+
+```
+Clone https://github.com/Steltic/steltic_cfs onto your computer. Install it per the README (Python 3.12, pip install -e . — openseespy needs native libs, install those too). Verify by running the app with model MOCK and confirming a design package appears. Then read contract/AGENT_START.md and contract/CFS_REFERENCE.md: for future design tasks you will follow that contract yourself — write cfg.py, run the engine via python in your terminal, fill the calc package, run consistency.check, and deliver report.html + viewer_3d.html. Let me know after you complete the MOCK tests, then Run the first example building end to end that way.
+```
 
 ## Canonical stems (do not rename)
 
