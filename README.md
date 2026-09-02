@@ -25,32 +25,17 @@ LICENSE  NOTICE.md
 
 Create three Grok Bots: **Query file manager**, **HR Steel App**, **CFS Steel App**. Do them in this order. When the steps below are done, all three are ready to design buildings.
 
-### 1. Query file manager
+### 1. Query file manager — two prompts
 
-Load `skills/Skill_query_file_manager_PACKAGED.md` as a skill, then follow its first-run on that bot's computer.
+**Prompt 1.** Load `skills/Skill_query_file_manager_PACKAGED.md` as a skill.
 
-1. Clone this repo onto the Query file manager computer and copy into the working root:
-   ```
-   git clone https://github.com/Steltic/steltic_grokbot.git steltic-retrieval
-   mkdir -p /workspace/engineering_rag
-   cp -r steltic-retrieval/scripts /workspace/engineering_rag/scripts
-   cp -r steltic-retrieval/engineering_rag_phase2/. /workspace/engineering_rag/
-   ```
-2. Bootstrap the environment (Docling pin **2.123.1**; see the skill for the
-   only-upgrade-with-revalidation rule):
-   ```
-   python3 -m venv /workspace/engineering_rag/.venv
-   source /workspace/engineering_rag/.venv/bin/activate
-   pip install docling==2.123.1
-   export TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata/
-   export DOCLING_DEVICE=cpu
-   ```
-3. Supply the specs: place your own licensed PDFs in the working-folder
-   `standards/` (you must own them — never fetch copies from unofficial sources).
-4. Follow the first-run sequence in the Query file manager skill, in order — convert ONE
-   document at a time (`convert_pdf.py`, then `recover_image_pages.py`, then `postprocess.py`, then
-   `validate.py` must PASS), then indexes/FTS/queue, then the gold probes, then HR and CFS
-   query-test suites. Production buildings are blocked until both test suites close.
+**Prompt 2.** Paste this into the bot:
+
+```
+Clone https://github.com/Steltic/steltic_grokbot onto your computer. Copy scripts/ to /workspace/engineering_rag/scripts and engineering_rag_phase2/ into /workspace/engineering_rag/. Create a Python venv at /workspace/engineering_rag/.venv, install Docling 2.123.1 (do not upgrade it without revalidation), and set TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata/ and DOCLING_DEVICE=cpu. Tell me when that bootstrap is done.
+```
+
+Supply the specs: place your own licensed PDFs in the working-folder `standards/`. Follow the first-run sequence in the Query file manager skill. The Bot will run through multiple examples of text retrieval from the converted specifications to confirm their accuracy, make any necessary revisions to them, then report back when they are ready for use in design.
 
 ### 2. HR Steel App — two prompts
 
