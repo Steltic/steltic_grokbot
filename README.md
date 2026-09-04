@@ -4,7 +4,7 @@ No external RAG required, everything is done inside Grok Bot.
 
 This repository is the **whole Steltic Grok Bot setup**: three bots that work together so you can start designing buildings. It is **standards-free**. The seven copyrighted specifications are **not** included in any form — no PDFs, no converted text, no spec indexes. Each site supplies its own licensed PDFs and converts them locally with the tooling here. See `NOTICE.md`.
 
-## Try the hosted version of Steltic for free using our servers [stelticai.com](https://stelticai.com)
+## Watch the setup video on my website at [stelticai.com](https://stelticai.com)
 
 ## What's in the repo
 
