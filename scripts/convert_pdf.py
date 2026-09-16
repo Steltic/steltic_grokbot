@@ -103,6 +103,18 @@ def parse_page_range(text: Optional[str], n_pages: int) -> tuple[int, int]:
     return start, min(end, n_pages)
 
 
+
+def _page_text_extractor() -> str:
+    """Which page-text extractor postprocess.py will use: Poppler's pdftotext when it is on PATH, else
+    pypdfium2 (reading order, no layout columns). Recorded in convert_meta.json so a census done
+    without Poppler is visible later."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from pdftext import describe
+        return describe()
+    except Exception:
+        return "unknown"
+
 def pdf_page_count(pdf_path: Path) -> int:
     """Page count via pypdfium2 (does not modify the PDF)."""
     import pypdfium2 as pdfium
@@ -708,6 +720,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "finished_utc": _now_iso(),
         "wall_seconds": round(wall_s, 3),
         "docling_version": docling_ver,
+        "page_text_extractor": _page_text_extractor(),     # pdftotext (Poppler) | pypdfium2 | none -- see pdftext.py
         "python": sys.version,
         "flags": {
             **flags_record(),

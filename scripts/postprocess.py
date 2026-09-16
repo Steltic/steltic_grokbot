@@ -1422,21 +1422,11 @@ def nearest_section_hint(
 
 
 def pdf_text_pages(pdf_path: Path) -> list[str]:
-    import subprocess
+    """One string per page: pdftotext -layout when Poppler is on PATH, else pypdfium2 (see pdftext.py).
+    Empty when neither can run -- the census is then skipped with a warning, not a traceback."""
+    from pdftext import pdf_pages_text
 
-    r = subprocess.run(
-        ["pdftotext", "-layout", str(pdf_path), "-"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if r.returncode != 0:
-        LOG.warning("pdftotext failed rc=%s err=%s", r.returncode, r.stderr[:300])
-        return []
-    pages = r.stdout.split("\f")
-    if pages and not pages[-1].strip():
-        pages = pages[:-1]
-    return pages
+    return pdf_pages_text(pdf_path)
 
 
 def census_pdf_eq_ids(

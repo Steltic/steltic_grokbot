@@ -18,7 +18,6 @@ import argparse
 import csv
 import json
 import re
-import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
@@ -200,13 +199,11 @@ def strip_furniture(page_text: str) -> str:
 
 
 def pdftotext_page(pno: int) -> str:
-    r = subprocess.run(
-        ["pdftotext", "-layout", "-f", str(pno), "-l", str(pno), str(PDF), "-"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return r.stdout or ""
+    """Page text: pdftotext -layout when Poppler is on PATH, else pypdfium2 (pdftext.py) -- Windows
+    machines rarely have Poppler, and a missing executable used to raise instead of returning ''."""
+    from pdftext import pdf_page_text
+
+    return pdf_page_text(PDF, pno)
 
 
 def is_comment_only(md: str) -> bool:
