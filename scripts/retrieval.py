@@ -11,9 +11,11 @@ Extracts are verbatim; this module never paraphrases.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
+import time
 import unicodedata
 from difflib import get_close_matches
 from functools import lru_cache
@@ -78,6 +80,19 @@ DOC_ALIASES = {
     "s400": "AISI_S400_20",
     "s400-20": "AISI_S400_20",
     "aisi-s400-20": "AISI_S400_20",
+    "aisc_342_22": "AISC_342_22",
+    "aisc342": "AISC_342_22",
+    "aisc 342": "AISC_342_22",
+    "aisc 342-22": "AISC_342_22",
+    "a342": "AISC_342_22",
+    "a342-22": "AISC_342_22",
+    "342-22": "AISC_342_22",
+    "asce_41_23": "ASCE_41_23",
+    "asce41": "ASCE_41_23",
+    "asce 41": "ASCE_41_23",
+    "asce 41-23": "ASCE_41_23",
+    "asce/sei 41-23": "ASCE_41_23",
+    "asce41-23": "ASCE_41_23",
     "asce7": "ASCE7",
     "asce 7": "ASCE7",
     "asce 7-22": "ASCE7",
@@ -140,6 +155,8 @@ def resolve_doc(token: Optional[str]) -> Optional[str]:
         "AISC_360_22",
         "AISC_341_22",
         "AISC_358_22",
+        "AISC_342_22",
+        "ASCE_41_23",
         "AISI_S100",
         "AISI_S240",
         "AISI_S400_20",
@@ -201,6 +218,104 @@ def fts_escape(query: str) -> str:
     return ' '.join(parts) if parts else q
 
 
+class QueryCache:
+    """Answers this corpus has given before, keyed on the question AND the state of the index.
+
+    Retrieval here is deterministic -- the same question against the same index gives the same
+    excerpts -- so a hit is exactly what a fresh lookup would return. What it saves is the work
+    around the lookup: a cold `search.py` spends most of its time starting Python and opening the
+    indexes, and the clauses a design touches (drift limits, SCWB, panel zones, the phi factors) are
+    asked over and over, by the tab and by every design agent's retrieval plan.
+
+    The key includes a fingerprint of `search/spec_fts.sqlite` (size and mtime), so `Rebuild index`
+    invalidates everything by construction: after a rebuild no key matches and the cache refills. It
+    is a cache and nothing else -- any failure to read or write it is swallowed and the real lookup
+    runs. Single file, stdlib sqlite3, no new dependency.
+    """
+
+    LIMIT = 5000            # rows kept; the least recently used go first
+
+    def __init__(self, path: Path, fingerprint: str) -> None:
+        self.path = path
+        self.fingerprint = fingerprint
+        self._con: Optional[sqlite3.Connection] = None
+        self.hits = 0
+        self.misses = 0
+
+    def _connect(self) -> Optional[sqlite3.Connection]:
+        if self._con is not None:
+            return self._con
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            con = sqlite3.connect(self.path, timeout=5)
+            con.execute("PRAGMA journal_mode=WAL")
+            con.execute(
+                "CREATE TABLE IF NOT EXISTS answers ("
+                " k TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, body TEXT NOT NULL,"
+                " made REAL NOT NULL, used REAL NOT NULL, uses INTEGER NOT NULL DEFAULT 1)"
+            )
+            con.execute("CREATE INDEX IF NOT EXISTS answers_used ON answers(used)")
+            con.commit()
+            self._con = con
+        except Exception:
+            self._con = None
+        return self._con
+
+    @staticmethod
+    def key(**parts: Any) -> str:
+        """One key per distinct question. The query is normalised the way a person varies it --
+        case and runs of whitespace -- and nothing else, because in this corpus punctuation carries
+        meaning (`F2-1` is not `F2 1`)."""
+        q = collapse_ws(nfkc(str(parts.pop("query", "") or ""))).casefold()
+        rest = sorted((k, "" if v is None else str(v)) for k, v in parts.items())
+        return hashlib.sha256(json.dumps([q, rest], ensure_ascii=False).encode("utf-8")).hexdigest()
+
+    def get(self, k: str) -> Optional[dict[str, Any]]:
+        con = self._connect()
+        if con is None:
+            return None
+        try:
+            row = con.execute("SELECT body FROM answers WHERE k=? AND fingerprint=?",
+                              (k, self.fingerprint)).fetchone()
+            if row is None:
+                self.misses += 1
+                return None
+            con.execute("UPDATE answers SET used=?, uses=uses+1 WHERE k=?", (time.time(), k))
+            con.commit()
+            self.hits += 1
+            return json.loads(row[0])
+        except Exception:
+            return None
+
+    def put(self, k: str, value: dict[str, Any]) -> None:
+        con = self._connect()
+        if con is None:
+            return
+        try:
+            now = time.time()
+            con.execute("INSERT OR REPLACE INTO answers (k, fingerprint, body, made, used, uses)"
+                        " VALUES (?,?,?,?,?,1)",
+                        (k, self.fingerprint, json.dumps(value, ensure_ascii=False), now, now))
+            # Rows from an older index are dead the moment the fingerprint changes; clear them out
+            # here rather than growing the file until someone notices.
+            con.execute("DELETE FROM answers WHERE fingerprint<>?", (self.fingerprint,))
+            n = con.execute("SELECT COUNT(*) FROM answers").fetchone()[0]
+            if n > self.LIMIT:
+                con.execute("DELETE FROM answers WHERE k IN "
+                            "(SELECT k FROM answers ORDER BY used ASC LIMIT ?)", (n - self.LIMIT,))
+            con.commit()
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        if self._con is not None:
+            try:
+                self._con.close()
+            except Exception:
+                pass
+            self._con = None
+
+
 class Corpus:
     def __init__(self, root: Optional[Path] = None) -> None:
         self.root = find_root(root)
@@ -218,6 +333,8 @@ class Corpus:
         self._doc_meta: Optional[dict[str, dict[str, Any]]] = None
         self._spec_fts: Optional[sqlite3.Connection] = None
         self._p2_fts: Optional[sqlite3.Connection] = None
+        self.use_cache = True                    # search.py --no-cache turns this off
+        self._cache: Optional[QueryCache] = None
 
     # ----- loaders -----
     def _load_json(self, name: str) -> Any:
@@ -321,6 +438,27 @@ class Corpus:
                     self._doc_meta[str(did)] = d
         return self._doc_meta
 
+    def _index_fingerprint(self) -> str:
+        """What the cached answers were computed from. Any rebuild moves this, so every key
+        computed against the old index stops matching -- there is no separate invalidation step to
+        forget to run."""
+        parts = []
+        for rel in ("search/spec_fts.sqlite", "search/phase2_fts.sqlite", "indexes/aliases.json"):
+            p = self.root / rel
+            try:
+                st = p.stat()
+                parts.append(f"{rel}:{st.st_size}:{st.st_mtime_ns}")
+            except OSError:
+                parts.append(f"{rel}:-")
+        return hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
+
+    def cache(self) -> Optional[QueryCache]:
+        if not self.use_cache:
+            return None
+        if self._cache is None:
+            self._cache = QueryCache(self.search_dir / "query_cache.sqlite", self._index_fingerprint())
+        return self._cache
+
     def close_fts(self) -> None:
         """Let go of the FTS files. A long-lived reader (the grounding server) holding these open is
         what makes `Rebuild index` fail on Windows with `WinError 32: being used by another
@@ -337,6 +475,9 @@ class Corpus:
 
     def close(self) -> None:
         self.close_fts()
+        if self._cache is not None:
+            self._cache.close()
+            self._cache = None
 
     def __enter__(self) -> "Corpus":
         return self
@@ -1528,6 +1669,32 @@ class Corpus:
         purpose: Optional[str] = None,
     ) -> dict[str, Any]:
         """Lookup order: exact section/eq/table, then FTS, then keyword, then alias expansion."""
+        cache = self.cache()
+        ckey = None
+        if cache is not None:
+            ckey = QueryCache.key(type_=type_, query=query, doc=doc, want_commentary=want_commentary,
+                                  neighbors=neighbors, limit=limit, collection=collection)
+            cached = cache.get(ckey)
+            if cached is not None:
+                cached["cached"] = True          # `purpose` is the caller's own note: not part of the answer
+                return cached
+        result = self._search_uncached(type_, query, doc, want_commentary, neighbors, limit,
+                                       collection, purpose)
+        if cache is not None and ckey is not None and isinstance(result, dict):
+            cache.put(ckey, result)
+        return result
+
+    def _search_uncached(
+        self,
+        type_: str,
+        query: str,
+        doc: Optional[str] = None,
+        want_commentary: bool = False,
+        neighbors: int = 1,
+        limit: int = 12,
+        collection: Optional[str] = None,
+        purpose: Optional[str] = None,
+    ) -> dict[str, Any]:
         t = (type_ or "auto").lower().strip()
         type_map = {
             "id": "id",

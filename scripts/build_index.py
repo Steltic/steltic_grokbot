@@ -151,7 +151,14 @@ def discover_specs(root: Path, indexes_dir: Optional[Path] = None) -> list[dict[
                 "layout": "per-document",
             }
 
-    flat = Path(indexes_dir) if indexes_dir else (root / "indexes")
+    # The converter writes here and nothing else does, so these records need no sorting out. The
+    # bare <root>/indexes below it is the legacy location -- shared with this builder's own output,
+    # which is why the records there have to be told apart (see below). A workspace converted
+    # before the split keeps working; one converted after it takes this branch.
+    flat = Path(indexes_dir) if indexes_dir else None
+    if flat is None:
+        converted_dir = root / "indexes" / "converted"
+        flat = converted_dir if (converted_dir / "documents.json").is_file() else (root / "indexes")
     if (flat / "documents.json").is_file():
         docs = _as_list(load_json(flat / "documents.json"))
         secs = _as_list(load_json(flat / "sections.json")) if (flat / "sections.json").is_file() else []
@@ -642,28 +649,25 @@ def build(root: Path, indexes_dir: Optional[Path] = None) -> dict[str, Any]:
     # Persist repaired spec tables/equations back where they came from, so the next build starts
     # from the repaired data. A per-document tree gets one file per document; a flat index set is
     # shared, so it is written once with every spec's repaired records.
-    flat_eq: dict[Path, list] = {}
-    flat_tbl: dict[Path, list] = {}
+    # A per-document tree is that document's own store, so the repaired rows go back into it and the
+    # next build starts from them. A flat/converted set is the CONVERTER's output and this builder's
+    # input: writing to it would overwrite the records this run was derived from -- and with the
+    # canonical ids this run assigned, so the next build would look for equations under `A360_22`
+    # and find them filed under `AISC_360_22`, losing them (12,621 FTS rows became 10,289). The
+    # repairs are in this run's own output either way; the input stays exactly as the converter left
+    # it, which is the only way a rebuild is repeatable.
     for spec in specs:
+        if spec["layout"] != "per-document":
+            continue
         stem, idx = (spec.get("canonical") or spec["stem"]), spec["index_dir"]
+        if not idx.is_dir():
+            continue
         spec_eq = [e for e in equations if e.get("doc") == stem and e.get("collection") == "specification"]
         spec_tbl = [tb for tb in tables if tb.get("doc") == stem and tb.get("collection") == "specification"]
-        if spec["layout"] == "per-document":
-            if not idx.is_dir():
-                continue
-            if spec_eq:
-                dump_json(idx / "equations.json", spec_eq)
-            if spec_tbl:
-                dump_json(idx / "tables.json", spec_tbl)
-        else:
-            flat_eq.setdefault(idx, []).extend(spec_eq)
-            flat_tbl.setdefault(idx, []).extend(spec_tbl)
-    for idx, rows in flat_eq.items():
-        if rows and idx.is_dir():
-            dump_json(idx / "equations.json", rows)
-    for idx, rows in flat_tbl.items():
-        if rows and idx.is_dir():
-            dump_json(idx / "tables.json", rows)
+        if spec_eq:
+            dump_json(idx / "equations.json", spec_eq)
+        if spec_tbl:
+            dump_json(idx / "tables.json", spec_tbl)
 
     # ----- aliases -----
     eq_ids = [e.get("eq_id") for e in equations if e.get("eq_id")]

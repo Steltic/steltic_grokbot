@@ -41,6 +41,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=12)
     parser.add_argument("--root", default=None)
     parser.add_argument("--max-text", type=int, default=20000)
+    parser.add_argument("--no-cache", action="store_true",
+                        help="ignore the answer cache and re-run the lookup (it is keyed on the "
+                             "index's fingerprint, so a rebuild already invalidates it)")
     # remaining positional = query tokens
     args, unknown = parser.parse_known_args(rest)
     query_parts = [u for u in unknown if not u.startswith("-")]
@@ -50,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     root = Path(args.root) if args.root else find_root()
     corpus = Corpus(root)
+    corpus.use_cache = not args.no_cache
     result = corpus.search(
         type_=mode,
         query=query,
@@ -59,7 +63,11 @@ def main(argv: list[str] | None = None) -> int:
         limit=args.limit,
         collection=args.collection,
     )
-    print(json.dumps(format_cli_result(result, max_text=args.max_text), ensure_ascii=False, indent=1))
+    out = format_cli_result(result, max_text=args.max_text)
+    if result.get("cached"):
+        out["cached"] = True          # the same answer a fresh lookup would give, from query_cache.sqlite
+    print(json.dumps(out, ensure_ascii=False, indent=1))
+    corpus.close()
     return 0 if result.get("found") else 1
 
 

@@ -461,6 +461,41 @@ PROFILES: dict[str, CommentaryProfile] = {
             "are 9.1-xxx, not 16.1-xxx (A360) or 9.2-xxx (A358)."
         ),
     ),
+    "aisc_342": CommentaryProfile(
+        name="aisc_342",
+        # Mirrors the 341 convention: AISC prints "COMMENTARY on the <standard's title>".
+        cover_header_regexes=[
+            r"COMMENTARY\s+on the Seismic Provisions for Evaluation",
+            r"COMMENTARY\s+on the Seismic Provisions",
+            r"^COMMENTARY$",
+        ],
+        running_header_regexes=[r"\[Comm\.", r"^Comm\.\s", r"COMMENTARY SYMBOLS", r"COMMENTARY GLOSSARY"],
+        body_heading_regexes=[
+            r"^COMMENTARY$",
+            r"^COMMENTARY\s+on the Seismic Provisions",
+            r"^COMMENTARY SYMBOLS",
+        ],
+        notes=(
+            "ANSI/AISC 342-22 (Evaluation and Retrofit). UNVALIDATED: written from the AISC house "
+            "convention that 341 and 358 follow, not from the PDF -- the cover page, the printed "
+            "label scheme and whether section ids repeat across the two halves have NOT been "
+            "checked against 342 itself. Verify before trusting part=standard vs part=commentary "
+            "for this document."
+        ),
+    ),
+    "asce41": CommentaryProfile(
+        name="asce41",
+        cover_header_regexes=[r"COMMENTARY TO STANDARD ASCE/SEI\s*41", r"COMMENTARY TO STANDARD ASCE"],
+        running_header_regexes=[r"COMMENTARY TO STANDARD ASCE"],
+        body_heading_regexes=[r"^COMMENTARY TO STANDARD ASCE"],
+        notes=(
+            "ASCE/SEI 41-23 (Seismic Evaluation and Retrofit of Existing Buildings). UNVALIDATED: "
+            "copied from the ASCE 7 convention. ASCE 41 may instead carry its commentary INLINE as "
+            "C-prefixed sections within each chapter rather than as a separate half, in which case "
+            "this profile finds no boundary and everything is filed as part=standard. Check the PDF "
+            "before relying on the split."
+        ),
+    ),
     "aisi_s100": CommentaryProfile(
         name="aisi_s100",
         cover_header_regexes=[r"AISI\s*S100-16-C"],
@@ -530,12 +565,23 @@ def profile_for_stem(stem: str, requested: str) -> CommentaryProfile:
                 f"known: {sorted(PROFILES)}"
             )
         return PROFILES[requested]
+    if requested == "aisc_342" or ("342" in s and requested in ("auto", "aisc", "", None)):
+        return PROFILES["aisc_342"]
+    if requested == "asce41" or is_asce41_doc(s):
+        return PROFILES["asce41"]
     if "s400" in s:
         return PROFILES["aisi_s400"]
     if "asce" in s:
         return PROFILES["asce7"]
     if "a360" in s or "aisc" in s:
         return PROFILES["aisc"]
+    # Nothing matched. Falling through to S400 is how AISC 342-22 and ASCE 41-23 were filed under
+    # another standard's identity for a fortnight without a word in the log. Say so loudly and use
+    # the profile whose cover regex is the most generic, so a boundary that IS found is at least
+    # plausible -- but the caller marks the document unvalidated.
+    LOG.warning("no document profile matches stem %r -- commentary detection is a guess. Add an "
+                "is_<doc>_doc() sniffer and a CommentaryProfile for it before trusting "
+                "part=standard vs part=commentary on this document.", stem)
     return PROFILES["aisi_s400"]
 
 
@@ -609,6 +655,21 @@ def is_aisc_341_doc(stem: str) -> bool:
 def is_aisc_doc(stem: str) -> bool:
     s = (stem or "").lower()
     return "a360" in s or "a341" in s or "a358" in s or s.startswith("aisc")
+
+
+def is_aisc_342_doc(stem: str) -> bool:
+    """AISC 342-22, Seismic Provisions for Evaluation and Retrofit of Existing Structural Steel
+    Buildings. Without this it matched nothing and fell through to the AISI S400 branch, which gave
+    it that standard's title, edition and commentary profile."""
+    s = re.sub(r"[^a-z0-9]+", "", (stem or "").lower())
+    return "342" in s and ("aisc" in s or "a342" in s)
+
+
+def is_asce41_doc(stem: str) -> bool:
+    """ASCE/SEI 41, Seismic Evaluation and Retrofit of Existing Buildings. `is_asce7_doc` looks for
+    `asce7`, so 41 matched nothing either."""
+    s = re.sub(r"[^a-z0-9]+", "", (stem or "").lower())
+    return "asce41" in s or s.startswith("asce41")
 
 
 def is_asce7_doc(stem: str) -> bool:
@@ -2716,6 +2777,7 @@ def write_indexes(
     indexes_dir.mkdir(parents=True, exist_ok=True)
     title = None
     edition = None
+    unvalidated = ""        # set by a branch that cannot vouch for what it is asserting
     # pull a title from page 1 body if possible
     for t in loaded.texts:
         if t.pages == [1] and t.label == "section_header":
@@ -2789,17 +2851,51 @@ def write_indexes(
             "printed 1 = pdf 136, qualified C-1). Not 16.1-xxx / 9.1-xxx / "
             "S100 1-1. Chapter C is INSTALLATION in both halves."
         )
-    else:
+    elif is_aisc_342_doc(loaded.stem):
+        title = title or (
+            "ANSI/AISC 342-22 Seismic Provisions for Evaluation and Retrofit of Existing "
+            "Structural Steel Buildings"
+        )
+        edition = "2022"
+        standard = "ANSI/AISC 342-22"
+        page_scheme = "not verified for this document -- read the printed labels before citing them"
+        unvalidated = "page label scheme and commentary boundary not checked against the PDF"
+    elif is_asce41_doc(loaded.stem):
+        title = title or "ASCE/SEI 41-23 Seismic Evaluation and Retrofit of Existing Buildings"
+        edition = "2023"
+        standard = "ASCE/SEI 41-23"
+        page_scheme = "not verified for this document -- read the printed labels before citing them"
+        unvalidated = ("page label scheme and commentary boundary not checked against the PDF; "
+                       "ASCE 41 may carry its commentary inline as C-prefixed sections rather than "
+                       "as a separate half")
+    elif "s400" in re.sub(r"[^a-z0-9]+", "", loaded.stem.lower()):
         title = title or "AISI S400-20 North American Standard for Seismic Design of Cold-Formed Steel Structural Systems"
         edition = "2020"
-        standard = "AISI S400-20" if "S400" in loaded.stem else loaded.stem
+        standard = "AISI S400-20"
         page_scheme = (
             "standard: roman front matter then arabic 1–71; "
             "commentary: roman front matter then arabic 1–… (qualified C-1 etc.)"
         )
+    else:
+        # No sniffer matched. This branch used to be AISI S400-20's, so every unrecognised document
+        # was published to the design agents carrying S400's title, edition and page-label scheme --
+        # AISC 342-22 and ASCE 41-23 both sat in the corpus that way, authoritative-looking and
+        # wrong. Say what is actually known (the stem, and whatever the front matter yielded) and
+        # mark the record unvalidated rather than borrowing another standard's identity.
+        LOG.warning("no identity known for stem %r: title/edition/standard left unasserted. Add an "
+                    "is_<doc>_doc() sniffer for it.", loaded.stem)
+        title = title or f"{loaded.stem} (unidentified document -- title not recovered from the front matter)"
+        edition = None
+        standard = loaded.stem
+        page_scheme = "unknown -- no profile for this document"
+        unvalidated = "no sniffer matches this stem: identity, page labels and commentary boundary are all unverified"
 
     doc_rec = {
         "id": loaded.stem,
+        # Present only when this document's identity or commentary split has not been checked
+        # against the PDF. Retrieval and the design agents can surface it; its absence means the
+        # document matched a validated profile.
+        **({"unvalidated": unvalidated} if unvalidated else {}),
         "title": title,
         "edition": edition,
         "standard": standard,
@@ -2883,7 +2979,13 @@ def write_indexes(
     # index set we just merged into, in which case the one-doc copy below would throw away every
     # other converted document (the flat workspace layout the hub uses puts both at <root>/indexes).
     local = loaded.doc_dir / "indexes"
-    shared = local.resolve() == indexes_dir.resolve()
+    # Skip the one-document copy when it would land on, or beside, the set we just merged into.
+    # `local` is <workspace>/indexes in the hub's flat layout, which is where build_index writes its
+    # own unified output -- a [doc_rec]-only copy there would wipe that, and wipe every other
+    # converted document with it. The converted/ set below it is already the per-document record.
+    ix = indexes_dir.resolve()
+    lo = local.resolve()
+    shared = ix == lo or lo in ix.parents
     if not shared:
         local.mkdir(parents=True, exist_ok=True)
         (local / "documents.json").write_text(
@@ -3298,10 +3400,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
     indexes_dir = args.indexes_dir
     if indexes_dir is None:
-        # The workspace's own index set. (The default used to be an absolute path from the machine
-        # this pipeline was written on, which on Windows put every document's records in
-        # C:\workspace\... where build_index never looked.)
-        indexes_dir = doc_dir / "indexes"
+        # The CONVERTER's own index set, below the workspace's. build_index reads it and writes its
+        # unified output to <root>/indexes -- the two must not share filenames, or each overwrites
+        # the other's documents.json and a rebuild ingests its own previous output.
+        indexes_dir = doc_dir / "indexes" / "converted"
     run(doc_dir, profile_name=args.profile, indexes_dir=indexes_dir, pdf=args.pdf, stem=args.stem)
     return 0
 

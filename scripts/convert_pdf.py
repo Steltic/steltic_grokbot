@@ -775,11 +775,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             postprocess_run(
                 out_dir,
                 profile_name=args.commentary_profile,
-                # The workspace's own index set. (This was a hard-coded /workspace/... path from the
-                # machine the pipeline was written on: on Windows every conversion's records went to
-                # C:\workspace\engineering_rag\indexes-lite, outside the workspace, where
-                # build_index.py never looked.)
-                indexes_dir=out_dir / "indexes",
+                # The converter's own index set, separate from build_index's unified output in
+                # <root>/indexes. (This was a hard-coded /workspace/... path from the machine the
+                # pipeline was written on: on Windows every conversion's records went to
+                # C:\workspace\engineering_rag\indexes-lite, where build_index never looked.)
+                indexes_dir=out_dir / "indexes" / "converted",
                 pdf=pdf_path,
                 stem=stem,
             )
