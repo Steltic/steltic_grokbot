@@ -157,20 +157,36 @@ def discover_specs(root: Path, indexes_dir: Optional[Path] = None) -> list[dict[
         secs = _as_list(load_json(flat / "sections.json")) if (flat / "sections.json").is_file() else []
         eqs = _as_list(load_json(flat / "equations.json")) if (flat / "equations.json").is_file() else []
         tbls = _as_list(load_json(flat / "tables.json")) if (flat / "tables.json").is_file() else []
-        by_doc: dict[str, dict[str, list]] = {}
+        by_doc: dict[str, dict[str, list]] = {}      # rows keyed by the `doc` they were written under
         for rows, key in ((secs, "sections"), (eqs, "equations"), (tbls, "tables")):
             for r in rows:
                 d = r.get("doc")
                 if d:
                     by_doc.setdefault(d, {}).setdefault(key, []).append(r)
+        # build() writes its unified output over the same <root>/indexes the converter writes to, so
+        # this file mixes three kinds of record. Separate them before anything else:
+        #   * phase-2 (collection opensees/examples)  -- not specifications, skip;
+        #   * this builder's own output from a previous run (it stamps collection=specification and
+        #     stores the document under its CANONICAL id) -- a stale copy of a document the
+        #     converter also describes, under a different id, so it would be counted and indexed
+        #     twice ("8 specification(s)" for five documents, three of them listed as both
+        #     AISC_360_22 and A360_22);
+        #   * the converter's own records (postprocess writes no `collection`) -- the truth.
+        converted, built = [], []
         for rec in docs:
+            kind = rec.get("collection") or rec.get("corpus")
+            if kind in P2_COLLECTIONS:
+                continue
+            (built if kind == "specification" else converted).append(rec)
+        seen_converted = {r.get("id") for r in converted} | {r.get("converted_stem") for r in converted}
+        for rec in built:
+            # keep a built record only when no conversion describes that document any more
+            if rec.get("id") in seen_converted or rec.get("converted_stem") in seen_converted:
+                continue
+            converted.append(rec)
+        for rec in converted:
             stem = rec.get("id") or rec.get("stem") or rec.get("doc")
             if not stem or stem in found:          # a per-document tree wins: it is the curated one
-                continue
-            # build() writes its own output over <root>/indexes, so on the second run this file also
-            # holds the phase-2 documents it merged in. They are not specifications: skip them, or a
-            # rebuild would ingest the OpenSees docs as authoritative and collide on their ids.
-            if (rec.get("collection") or rec.get("corpus")) in P2_COLLECTIONS:
                 continue
             part = by_doc.get(stem, {})
             found[stem] = {
