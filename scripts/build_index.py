@@ -28,6 +28,7 @@ from retrieval import (  # noqa: E402
     find_root,
     nfkc,
     normalize_eq_id,
+    resolve_doc,
 )
 from pipeline_fixes import (  # noqa: E402
     build_example_id_aliases,
@@ -37,6 +38,9 @@ from pipeline_fixes import (  # noqa: E402
     pdf_page_text,
 )
 
+# Documents this pipeline has profiles for. NOT a requirement: the corpus is whatever has been
+# converted (see discover_specs) -- this list only fixes the order they are ingested in, so ids stay
+# stable between builds, and names the canonical stems the skills prefer.
 SPEC_STEMS = [
     "AISC_360_22",
     "AISC_341_22",
@@ -46,6 +50,91 @@ SPEC_STEMS = [
     "AISI_S400_20",
     "ASCE7",
 ]
+
+
+P2_COLLECTIONS = {"opensees", "examples", "steel_design_examples"}
+
+
+def _as_list(obj: Any) -> list[dict[str, Any]]:
+    if isinstance(obj, list):
+        return [r for r in obj if isinstance(r, dict)]
+    return [obj] if isinstance(obj, dict) else []
+
+
+def discover_specs(root: Path, indexes_dir: Optional[Path] = None) -> list[dict[str, Any]]:
+    """Every converted specification on this machine, in two layouts.
+
+    * **per-document tree** -- `documents/standards/<stem>/indexes/{documents,sections,equations,
+      tables}.json`, one document per folder. The layout the original corpus was assembled in.
+    * **flat workspace** -- what `convert_pdf.py` actually writes when the hub runs it: one
+      `<root>/indexes/*.json` set holding EVERY converted document's records, documents keyed by
+      `id` and the rest by `doc`.
+
+    Nothing is required. A machine that converted three of the seven profiled documents gets an
+    index of three; the caller reports what went in. (Before this, the builder iterated a fixed
+    list and `SystemExit`-ed on the first document a user had not converted -- which, with the flat
+    layout it could not read either, meant `spec_fts.sqlite` was never built at all.)
+    """
+    found: dict[str, dict[str, Any]] = {}
+
+    std_root = root / "documents" / "standards"
+    if std_root.is_dir():
+        for ddir in sorted(p for p in std_root.iterdir() if p.is_dir()):
+            idx = ddir / "indexes"
+            if not (idx / "documents.json").is_file():
+                continue
+            docs = _as_list(load_json(idx / "documents.json"))
+            if not docs:
+                continue
+            stem = ddir.name
+            found[stem] = {
+                "stem": stem,
+                "canonical": resolve_doc(stem) or stem,
+                "doc": docs[0],
+                "sections": _as_list(load_json(idx / "sections.json")) if (idx / "sections.json").is_file() else [],
+                "equations": _as_list(load_json(idx / "equations.json")) if (idx / "equations.json").is_file() else [],
+                "tables": _as_list(load_json(idx / "tables.json")) if (idx / "tables.json").is_file() else [],
+                "pages_dir": ddir / "markdown" / "pages_search",
+                "index_dir": idx,
+                "layout": "per-document",
+            }
+
+    flat = Path(indexes_dir) if indexes_dir else (root / "indexes")
+    if (flat / "documents.json").is_file():
+        docs = _as_list(load_json(flat / "documents.json"))
+        secs = _as_list(load_json(flat / "sections.json")) if (flat / "sections.json").is_file() else []
+        eqs = _as_list(load_json(flat / "equations.json")) if (flat / "equations.json").is_file() else []
+        tbls = _as_list(load_json(flat / "tables.json")) if (flat / "tables.json").is_file() else []
+        by_doc: dict[str, dict[str, list]] = {}
+        for rows, key in ((secs, "sections"), (eqs, "equations"), (tbls, "tables")):
+            for r in rows:
+                d = r.get("doc")
+                if d:
+                    by_doc.setdefault(d, {}).setdefault(key, []).append(r)
+        for rec in docs:
+            stem = rec.get("id") or rec.get("stem") or rec.get("doc")
+            if not stem or stem in found:          # a per-document tree wins: it is the curated one
+                continue
+            # build() writes its own output over <root>/indexes, so on the second run this file also
+            # holds the phase-2 documents it merged in. They are not specifications: skip them, or a
+            # rebuild would ingest the OpenSees docs as authoritative and collide on their ids.
+            if (rec.get("collection") or rec.get("corpus")) in P2_COLLECTIONS:
+                continue
+            part = by_doc.get(stem, {})
+            found[stem] = {
+                "stem": stem,
+                "canonical": resolve_doc(stem) or stem,
+                "doc": rec,
+                "sections": part.get("sections", []),
+                "equations": part.get("equations", []),
+                "tables": part.get("tables", []),
+                "pages_dir": root / "markdown" / "pages_search",
+                "index_dir": flat,
+                "layout": "flat",
+            }
+
+    order = {stem: i for i, stem in enumerate(SPEC_STEMS)}
+    return sorted(found.values(), key=lambda d: (order.get(d["stem"], len(SPEC_STEMS)), d["stem"]))
 
 SEED_GROUPS = [
     ["LTB", "lateral-torsional buckling", "lateral torsional buckling", "L-T buckling"],
@@ -132,6 +221,7 @@ def find_search_md(root: Path, stem: str, doc_rec: dict[str, Any]) -> Optional[P
     if p.is_file():
         return p
     for cand in (
+        root / "markdown" / f"{stem}.search.md",                      # flat workspace (convert_pdf.py output_dir)
         root / "documents" / "standards" / stem / "markdown" / f"{stem}.search.md",
         root / "documents" / "standards" / stem / f"{stem}.search.md",
         root / "documents" / "standards" / stem / "complete" / f"{stem}.search.md",
@@ -229,7 +319,7 @@ def pick_body_occurrence(rows: list[dict[str, Any]]) -> dict[str, Any]:
     )
 
 
-def build(root: Path) -> dict[str, Any]:
+def build(root: Path, indexes_dir: Optional[Path] = None) -> dict[str, Any]:
     std_root = root / "documents" / "standards"
     p2_root = root / "engineering_rag_phase2"
     out_idx = root / "indexes"
@@ -245,19 +335,35 @@ def build(root: Path) -> dict[str, Any]:
     collisions: list[str] = []
 
     # ----- specs -----
-    for stem in SPEC_STEMS:
-        ddir = std_root / stem
-        idx = ddir / "indexes"
-        if not (idx / "documents.json").is_file():
-            raise SystemExit(f"missing spec indexes for {stem}: {idx}")
-        docs = load_json(idx / "documents.json")
-        secs = load_json(idx / "sections.json")
-        eqs = load_json(idx / "equations.json")
-        tbls = load_json(idx / "tables.json")
-        doc0 = docs[0] if isinstance(docs, list) else docs
+    specs = discover_specs(root, indexes_dir)
+    if not specs:
+        raise SystemExit(
+            "no converted specifications found. Looked for a per-document tree under "
+            f"{std_root} and a flat index set at {(indexes_dir or (root / 'indexes'))}. "
+            "Convert at least one PDF on the Convert PDF tab first."
+        )
+    print(f"[index] {len(specs)} specification(s): " + ", ".join(f"{d['stem']} ({d['layout']})" for d in specs))
+    for spec in specs:
+        # Files are named after the stem the conversion used (often the PDF's filename, e.g.
+        # "A360_22"); ids are written under the canonical document name the skills and every
+        # `--doc` filter use ("AISC_360_22"), so a corpus converted with filename stems is still
+        # reachable by document without re-converting anything.
+        # On a rebuild the records already carry the canonical id; `converted_stem` remembers what
+        # the files on disk are actually called (and survives a workspace restored to another path,
+        # where the absolute `searchable_markdown` in the record no longer resolves).
+        disk_stem = spec["doc"].get("converted_stem") or spec["stem"]
+        stem = spec.get("canonical") or spec["stem"]
+        doc0, secs, eqs, tbls = dict(spec["doc"]), spec["sections"], spec["equations"], spec["tables"]
+        doc0["id"] = stem
+        doc0.pop("collection", None)
+        if stem != disk_stem:
+            doc0["converted_stem"] = disk_stem
+            print(f"[index] {disk_stem} indexed as {stem}")
         edition = doc0.get("edition")
-        search_md = find_search_md(root, stem, doc0)
-        pages_dir = ddir / "markdown" / "pages_search"
+        search_md = find_search_md(root, disk_stem, doc0)
+        pages_dir = spec["pages_dir"]
+        if not search_md:
+            print(f"[index] {disk_stem}: no <stem>.search.md found -- sections indexed without page text")
         if search_md:
             spec_pages[stem] = parse_pages(search_md, pages_dir if pages_dir.is_dir() else None)
             doc0 = dict(doc0)
@@ -269,6 +375,7 @@ def build(root: Path) -> dict[str, Any]:
 
         for s in secs:
             rec = dict(s)
+            rec["doc"] = stem
             rec["edition"] = edition
             rec["collection"] = "specification"
             rec["corpus"] = "specification"
@@ -278,6 +385,7 @@ def build(root: Path) -> dict[str, Any]:
 
         for e in eqs:
             rec = dict(e)
+            rec["doc"] = stem
             rec["edition"] = edition
             rec["collection"] = "specification"
             rec["corpus"] = "specification"
@@ -289,6 +397,7 @@ def build(root: Path) -> dict[str, Any]:
 
         for t in tbls:
             rec = dict(t)
+            rec["doc"] = stem
             rec["edition"] = edition
             rec["collection"] = "specification"
             rec["corpus"] = "specification"
@@ -438,18 +547,31 @@ def build(root: Path) -> dict[str, Any]:
                     issues.append(msg)
                 e["issues"] = issues
 
-    # persist repaired spec tables/equations into per-doc indexes
-    std_root = root / "documents" / "standards"
-    for stem in SPEC_STEMS:
-        idx = std_root / stem / "indexes"
-        if not idx.is_dir():
-            continue
+    # Persist repaired spec tables/equations back where they came from, so the next build starts
+    # from the repaired data. A per-document tree gets one file per document; a flat index set is
+    # shared, so it is written once with every spec's repaired records.
+    flat_eq: dict[Path, list] = {}
+    flat_tbl: dict[Path, list] = {}
+    for spec in specs:
+        stem, idx = (spec.get("canonical") or spec["stem"]), spec["index_dir"]
         spec_eq = [e for e in equations if e.get("doc") == stem and e.get("collection") == "specification"]
         spec_tbl = [tb for tb in tables if tb.get("doc") == stem and tb.get("collection") == "specification"]
-        if spec_eq:
-            dump_json(idx / "equations.json", spec_eq)
-        if spec_tbl:
-            dump_json(idx / "tables.json", spec_tbl)
+        if spec["layout"] == "per-document":
+            if not idx.is_dir():
+                continue
+            if spec_eq:
+                dump_json(idx / "equations.json", spec_eq)
+            if spec_tbl:
+                dump_json(idx / "tables.json", spec_tbl)
+        else:
+            flat_eq.setdefault(idx, []).extend(spec_eq)
+            flat_tbl.setdefault(idx, []).extend(spec_tbl)
+    for idx, rows in flat_eq.items():
+        if rows and idx.is_dir():
+            dump_json(idx / "equations.json", rows)
+    for idx, rows in flat_tbl.items():
+        if rows and idx.is_dir():
+            dump_json(idx / "tables.json", rows)
 
     # ----- aliases -----
     eq_ids = [e.get("eq_id") for e in equations if e.get("eq_id")]
@@ -474,13 +596,13 @@ def build(root: Path) -> dict[str, Any]:
 
     # ----- master TOC -----
     spec_toc: dict[str, Any] = {}
-    for stem in SPEC_STEMS:
-        spec_toc[stem] = {"standard": [], "commentary": []}
+    for spec in specs:                       # whatever was converted, not a fixed list
+        spec_toc[spec["stem"]] = {"standard": [], "commentary": []}
     for s in sections:
         if s.get("collection") != "specification":
             continue
         part = s.get("part") if s.get("part") in ("standard", "commentary") else "standard"
-        spec_toc[s["doc"]][part].append(
+        spec_toc.setdefault(s["doc"], {"standard": [], "commentary": []})[part].append(
             {
                 "id": s["id"],
                 "section_id": s.get("section_id"),
@@ -506,7 +628,7 @@ def build(root: Path) -> dict[str, Any]:
         "Specification sections are authoritative. OpenSees / examples are **not** authoritative.",
         "",
     ]
-    for stem in SPEC_STEMS:
+    for stem in spec_toc:
         toc_md_lines.append(f"## {stem} (specification)")
         for part in ("standard", "commentary"):
             toc_md_lines.append(f"\n### {part}")
@@ -798,9 +920,11 @@ def rows_same_part(by_key: dict, doc: str, part: str) -> list[dict[str, Any]]:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Build unified indexes + spec FTS")
     ap.add_argument("--root", type=Path, default=None)
+    ap.add_argument("--indexes", type=Path, default=None,
+                    help="where the converter's per-document index JSONs are (default: <root>/indexes)")
     args = ap.parse_args()
     root = args.root or find_root()
-    build(root)
+    build(root, args.indexes)
 
 
 if __name__ == "__main__":

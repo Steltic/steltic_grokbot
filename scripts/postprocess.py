@@ -2836,27 +2836,31 @@ def write_indexes(
     tables_path = indexes_dir / "tables.json"
     merge_list(tables_path, "doc", tables)
 
-    # also copy lite indexes next to the document for one-doc use
+    # Also copy lite indexes next to the document for one-doc use -- unless that IS the shared
+    # index set we just merged into, in which case the one-doc copy below would throw away every
+    # other converted document (the flat workspace layout the hub uses puts both at <root>/indexes).
     local = loaded.doc_dir / "indexes"
-    local.mkdir(parents=True, exist_ok=True)
-    (local / "documents.json").write_text(
-        json.dumps([doc_rec], indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
-    (local / "sections.json").write_text(
-        json.dumps(sections, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
-    (local / "equations.json").write_text(
-        json.dumps(eq_index, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
-    (local / "tables.json").write_text(
-        json.dumps(tables, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
+    shared = local.resolve() == indexes_dir.resolve()
+    if not shared:
+        local.mkdir(parents=True, exist_ok=True)
+        (local / "documents.json").write_text(
+            json.dumps([doc_rec], indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        (local / "sections.json").write_text(
+            json.dumps(sections, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        (local / "equations.json").write_text(
+            json.dumps(eq_index, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        (local / "tables.json").write_text(
+            json.dumps(tables, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
     return {
         "documents": str(docs_path),
         "sections": str(sections_path),
         "equations": str(equations_path),
         "tables": str(tables_path),
-        "local_indexes": str(local),
+        "local_indexes": "(shared with the workspace index set)" if shared else str(local),
     }
 
 

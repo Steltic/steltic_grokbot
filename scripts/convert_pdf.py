@@ -770,7 +770,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             postprocess_run(
                 out_dir,
                 profile_name=args.commentary_profile,
-                indexes_dir=Path("/workspace/engineering_rag/indexes-lite"),
+                # The workspace's own index set. (This was a hard-coded /workspace/... path from the
+                # machine the pipeline was written on: on Windows every conversion's records went to
+                # C:\workspace\engineering_rag\indexes-lite, outside the workspace, where
+                # build_index.py never looked.)
+                indexes_dir=out_dir / "indexes",
                 pdf=pdf_path,
             )
         except Exception:
