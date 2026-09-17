@@ -1049,22 +1049,62 @@ class LoadedDoc:
     formulas: list[TextItem]
 
 
-def load_convert_meta(doc_dir: Path) -> dict[str, Any]:
+def own_chunks(chunks_dir: Path, stem: str) -> list[Path]:
+    """The chunk files belonging to THIS document.
+
+    convert_pdf names them `<stem>_p001_005.json`. In the hub's flat workspace every conversion
+    shares `structured/chunks/`, so globbing `*.json` loads every converted document at once: the
+    texts, formulas and tables of whichever stem sorts last win per page number, and each
+    document's searchable markdown ends up carrying another standard's provisions under its own
+    headings (AISC 360's Chapter A served as AISC 341 D1.1, for one observed case). A genuine
+    per-document folder -- nothing in it named for another stem -- still loads everything, so the
+    original one-document-per-folder layout is unchanged.
+    """
+    own = sorted(chunks_dir.glob(f"{stem}_p*.json"))
+    if own:
+        return own
+    everything = sorted(chunks_dir.glob("*.json"))
+    named = [p for p in everything if re.match(r".+_p\d+_\d+\.json$", p.name)]
+    if named:
+        stems = sorted({re.sub(r"_p\d+_\d+\.json$", "", p.name) for p in named})
+        raise FileNotFoundError(
+            f"no chunks for {stem!r} in {chunks_dir} -- it holds {', '.join(stems)}. "
+            f"Convert that document first, or pass the stem you mean with --stem."
+        )
+    return everything
+
+
+def load_convert_meta(doc_dir: Path, stem: Optional[str] = None) -> dict[str, Any]:
+    if stem:
+        # Written per document by convert_pdf; convert_meta.json itself is shared in a flat
+        # workspace and describes only the conversion that ran last.
+        per = doc_dir / f"convert_meta_{stem}.json"
+        if per.is_file():
+            try:
+                return json.loads(per.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        base = _load_convert_meta_file(doc_dir)
+        return base if base.get("stem") == stem else {"stem": stem}
+    return _load_convert_meta_file(doc_dir)
+
+
+def _load_convert_meta_file(doc_dir: Path) -> dict[str, Any]:
     p = doc_dir / "convert_meta.json"
     if p.is_file():
         return json.loads(p.read_text(encoding="utf-8"))
     return {}
 
 
-def load_chunks(doc_dir: Path) -> LoadedDoc:
-    meta = load_convert_meta(doc_dir)
-    stem = meta.get("stem") or doc_dir.name
+def load_chunks(doc_dir: Path, stem: Optional[str] = None) -> LoadedDoc:
+    meta = load_convert_meta(doc_dir, stem)
+    stem = stem or meta.get("stem") or doc_dir.name
     src = meta.get("source_pdf")
     source_pdf = Path(src) if src else None
     chunks_dir = doc_dir / "structured" / "chunks"
     if not chunks_dir.is_dir():
         raise FileNotFoundError(f"No structured/chunks in {doc_dir}")
-    chunk_paths = sorted(chunks_dir.glob("*.json"))
+    chunk_paths = own_chunks(chunks_dir, stem)
     texts: list[TextItem] = []
     formulas: list[TextItem] = []
     tables_raw: list[dict[str, Any]] = []
@@ -3018,7 +3058,7 @@ def write_complete_pack(
     zip_path = complete / f"{stem}.tables.zip"
     if tables_dir.is_dir():
         import zipfile
-        md_files = sorted(tables_dir.glob("*.md"))
+        md_files = sorted(tables_dir.glob(f"{stem}_*.md")) or sorted(tables_dir.glob("*.md"))
         if md_files:
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                 for fp in md_files:
@@ -3119,12 +3159,13 @@ def run(
     profile_name: str = "auto",
     indexes_dir: Optional[Path] = None,
     pdf: Optional[Path] = None,
+    stem: Optional[str] = None,
 ) -> dict[str, Any]:
     chunks_dir = doc_dir / "structured" / "chunks"
     if not chunks_dir.is_dir() or not any(chunks_dir.glob("*.json")):
         LOG.info("No Docling chunks in %s; husk-backfill existing indexes", doc_dir)
         return run_husk_backfill_existing(doc_dir, indexes_dir=indexes_dir, pdf=pdf)
-    loaded = load_chunks(doc_dir)
+    loaded = load_chunks(doc_dir, stem)
     if pdf:
         loaded.source_pdf = pdf
     profile = profile_for_stem(loaded.stem, profile_name)
@@ -3246,6 +3287,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Where to write indexes-lite (default: <engineering_rag>/indexes-lite)",
     )
     p.add_argument("--pdf", type=Path, default=None, help="Override source PDF path")
+    p.add_argument("--stem", default=None,
+                   help="Which converted document to post-process. Needed when the folder holds "
+                        "more than one (the hub's workspace does): the chunks, tables and metadata "
+                        "of the others are then left alone.")
     args = p.parse_args(argv)
     doc_dir = args.doc_dir.resolve()
     if not doc_dir.is_dir():
@@ -3253,8 +3298,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
     indexes_dir = args.indexes_dir
     if indexes_dir is None:
-        indexes_dir = Path("/workspace/engineering_rag/indexes-lite")
-    run(doc_dir, profile_name=args.profile, indexes_dir=indexes_dir, pdf=args.pdf)
+        # The workspace's own index set. (The default used to be an absolute path from the machine
+        # this pipeline was written on, which on Windows put every document's records in
+        # C:\workspace\... where build_index never looked.)
+        indexes_dir = doc_dir / "indexes"
+    run(doc_dir, profile_name=args.profile, indexes_dir=indexes_dir, pdf=args.pdf, stem=args.stem)
     return 0
 
 

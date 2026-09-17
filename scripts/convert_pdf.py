@@ -757,6 +757,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         },
     }
     meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+    # Also per document: convert_meta.json is shared when several documents convert into one
+    # workspace, so it describes only whichever ran last. Re-running postprocess for an earlier
+    # document needs that document's own source PDF and page range.
+    (out_dir / f"convert_meta_{stem}.json").write_text(
+        json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
     LOG.info("Wrote %s status=%s wall=%.1fs", meta_path, status, wall_s)
 
     if status == "success" and not args.no_postprocess:
@@ -776,6 +781,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 # build_index.py never looked.)
                 indexes_dir=out_dir / "indexes",
                 pdf=pdf_path,
+                stem=stem,
             )
         except Exception:
             LOG.exception("postprocess.py failed (conversion itself succeeded)")
