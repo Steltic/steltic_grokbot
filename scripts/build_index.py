@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import sqlite3
 import sys
 import unicodedata
@@ -53,6 +54,27 @@ SPEC_STEMS = [
 
 
 P2_COLLECTIONS = {"opensees", "examples", "steel_design_examples"}
+
+
+def find_phase2(root: Path) -> Optional[Path]:
+    """The shipped OpenSees + worked-examples corpus.
+
+    It ships as `engineering_rag_phase2/{documents,indexes,search}`, but the hub's post-install
+    step copies its CONTENTS into the workspace root, so on a hub machine its index files sit in
+    `<root>/indexes` next to the converter's -- where the first conversion overwrote them. Look for
+    it in both places, and verify by content: `<root>/indexes/documents.json` is the converter's
+    (or this builder's) after any conversion, and holds no phase-2 records at all."""
+    for cand in (root / "engineering_rag_phase2", root):
+        f = cand / "indexes" / "documents.json"
+        if not f.is_file():
+            continue
+        try:
+            rows = _as_list(json.loads(f.read_text(encoding="utf-8")))
+        except Exception:
+            continue
+        if any((r.get("collection") or r.get("group")) in P2_COLLECTIONS for r in rows):
+            return cand
+    return None
 
 
 def _as_list(obj: Any) -> list[dict[str, Any]]:
@@ -321,7 +343,7 @@ def pick_body_occurrence(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def build(root: Path, indexes_dir: Optional[Path] = None) -> dict[str, Any]:
     std_root = root / "documents" / "standards"
-    p2_root = root / "engineering_rag_phase2"
+    p2_root = find_phase2(root)
     out_idx = root / "indexes"
     out_search = root / "search"
     out_idx.mkdir(parents=True, exist_ok=True)
@@ -408,10 +430,30 @@ def build(root: Path, indexes_dir: Optional[Path] = None) -> dict[str, Any]:
             tables.append(rec)
 
     # ----- phase-2 -----
-    p2_docs = load_json(p2_root / "indexes" / "documents.json")
-    p2_secs = load_json(p2_root / "indexes" / "sections.json")
-    p2_eqs = load_json(p2_root / "indexes" / "equations.json")
-    p2_toc = load_json(p2_root / "indexes" / "master_toc.json")
+    # Optional. Its index files can be missing on a hub workspace (the installer flattens them into
+    # <root>/indexes, where a conversion overwrites them); the prebuilt search/phase2_fts.sqlite is
+    # what actually answers OpenSees queries and is left alone, so the specification index still
+    # builds and the only loss is phase-2 rows in the unified sections/TOC.
+    if p2_root is None:
+        print("[index] no OpenSees / examples corpus found -- indexing specifications only "
+              "(search/phase2_fts.sqlite, if present, keeps answering those queries)")
+        p2_docs, p2_secs, p2_eqs, p2_toc = [], [], [], {}
+    else:
+        if p2_root != root / "engineering_rag_phase2":
+            print(f"[index] OpenSees / examples corpus: {p2_root}")
+        p2_docs = load_json(p2_root / "indexes" / "documents.json")
+        p2_secs = load_json(p2_root / "indexes" / "sections.json")
+        p2_eqs = load_json(p2_root / "indexes" / "equations.json")
+        p2_toc = load_json(p2_root / "indexes" / "master_toc.json")
+        if p2_root == root:
+            # Flattened into the workspace: these files hold the converted specifications too.
+            # Take only the phase-2 rows, or a specification would be ingested twice -- once
+            # authoritative, once as an OpenSees doc.
+            spec_ids = {d["stem"] for d in specs} | {d.get("canonical") for d in specs}
+            p2_docs = [d for d in _as_list(p2_docs)
+                       if (d.get("collection") or d.get("group")) in P2_COLLECTIONS]
+            p2_secs = [r for r in _as_list(p2_secs) if r.get("doc") not in spec_ids]
+            p2_eqs = [r for r in _as_list(p2_eqs) if r.get("doc") not in spec_ids]
 
     for d in p2_docs:
         rec = dict(d)
@@ -876,11 +918,14 @@ def build(root: Path, indexes_dir: Optional[Path] = None) -> dict[str, Any]:
     con.commit()
     con.close()
 
-    # ensure phase2 FTS symlink
-    p2_fts_src = p2_root / "search" / "phase2_fts.sqlite"
+    # The phase-2 FTS ships prebuilt and is never rebuilt here. Put it in place only if it is not
+    # already there (and not if source and destination are the same file, which they are whenever
+    # the corpus was flattened into the workspace root). Windows has no symlink permission for a
+    # normal user, so copy.
     p2_fts_dst = out_search / "phase2_fts.sqlite"
-    if not p2_fts_dst.exists():
-        p2_fts_dst.symlink_to(p2_fts_src)
+    p2_fts_src = (p2_root / "search" / "phase2_fts.sqlite") if p2_root else None
+    if p2_fts_src and p2_fts_src.is_file() and not p2_fts_dst.exists():
+        shutil.copy2(p2_fts_src, p2_fts_dst)
 
     spec_docs = [d for d in documents if d.get("collection") == "specification"]
     p2d = [d for d in documents if d.get("collection") != "specification"]
@@ -901,7 +946,7 @@ def build(root: Path, indexes_dir: Optional[Path] = None) -> dict[str, Any]:
         "tables_phase2": len(p2_tbl),
         "fts_rows": len(fts_rows),
         "spec_fts_bytes": fts_path.stat().st_size,
-        "phase2_fts_bytes": p2_fts_src.stat().st_size,
+        "phase2_fts_bytes": p2_fts_dst.stat().st_size if p2_fts_dst.is_file() else 0,
         "id_collisions": collisions,
     }
     dump_json(out_idx / "build_stats.json", stats)

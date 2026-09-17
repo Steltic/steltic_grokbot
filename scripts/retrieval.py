@@ -354,12 +354,20 @@ class Corpus:
         search_md = meta.get("searchable_markdown")
         path = Path(search_md) if search_md else None
         if path is None or not path.is_file():
-            # fall back to conventional locations
-            for cand in (
-                self.root / "documents" / "standards" / doc / "markdown" / f"{doc}.search.md",
-                self.root / "documents" / "standards" / doc / f"{doc}.search.md",
-                self.root / "documents" / "standards" / doc / "complete" / f"{doc}.search.md",
-            ):
+            # Fall back to conventional locations. `converted_stem` is what the file is called when
+            # the conversion used a different stem from the canonical document name (A360_22 ->
+            # AISC_360_22); the flat candidates are the hub workspace's layout. Both matter when the
+            # stored absolute path is stale -- a workspace restored from a backup, or another PC.
+            names = [n for n in (doc, meta.get("converted_stem")) if n]
+            cands = []
+            for n in names:
+                cands += [
+                    self.root / "markdown" / f"{n}.search.md",
+                    self.root / "documents" / "standards" / n / "markdown" / f"{n}.search.md",
+                    self.root / "documents" / "standards" / n / f"{n}.search.md",
+                    self.root / "documents" / "standards" / n / "complete" / f"{n}.search.md",
+                ]
+            for cand in cands:
                 if cand.is_file():
                     path = cand
                     break
@@ -395,6 +403,8 @@ class Corpus:
                 }
         # fill gaps from pages_search (S400 may miss some)
         ps = self.root / "documents" / "standards" / doc / "markdown" / "pages_search"
+        if not ps.is_dir():
+            ps = self.root / "markdown" / "pages_search"          # flat workspace
         if ps.is_dir():
             for fp in ps.glob("page_*.md"):
                 m = re.search(r"page_(\d+)", fp.name)
