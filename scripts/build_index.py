@@ -16,6 +16,7 @@ import json
 import re
 import shutil
 import sqlite3
+import time
 import sys
 import unicodedata
 from collections import defaultdict
@@ -54,6 +55,35 @@ SPEC_STEMS = [
 
 
 P2_COLLECTIONS = {"opensees", "examples", "steel_design_examples"}
+
+
+def _remove_index(path: Path, tries: int = 40) -> None:
+    """Delete an index file a reader may still hold open.
+
+    On Windows an open sqlite connection blocks the unlink outright (`WinError 32: the process
+    cannot access the file because it is being used by another process`), and the reader here is
+    usually the grounding server answering the design agents' searches. It releases the file
+    between queries, so a short wait is enough; if something holds it for good, say which file and
+    what to do instead of a traceback."""
+    if not path.exists():
+        return
+    for i in range(tries):
+        try:
+            path.unlink()
+            return
+        except PermissionError:
+            if i == 0:
+                print(f"[index] {path.name} is open in another process -- waiting for it to be released")
+            time.sleep(0.25)
+        except OSError:
+            break
+    raise SystemExit(
+        f"[index] cannot replace {path}: another process has it open.\n"
+        f"        The standards-search server that answers the design agents holds the index while\n"
+        f"        it serves a query. Stop that module's server (the hub's Modules page -> the Query\n"
+        f"        file manager card -> Stop server), or close whatever has the file open, then run\n"
+        f"        Rebuild index again."
+    )
 
 
 def find_phase2(root: Path) -> Optional[Path]:
@@ -708,8 +738,7 @@ def build(root: Path, indexes_dir: Optional[Path] = None) -> dict[str, Any]:
 
     # ----- spec FTS -----
     fts_path = out_search / "spec_fts.sqlite"
-    if fts_path.exists():
-        fts_path.unlink()
+    _remove_index(fts_path)
     con = sqlite3.connect(fts_path, timeout=60)
     con.execute("PRAGMA journal_mode=DELETE")
     con.execute("PRAGMA synchronous=OFF")

@@ -321,6 +321,29 @@ class Corpus:
                     self._doc_meta[str(did)] = d
         return self._doc_meta
 
+    def close_fts(self) -> None:
+        """Let go of the FTS files. A long-lived reader (the grounding server) holding these open is
+        what makes `Rebuild index` fail on Windows with `WinError 32: being used by another
+        process` -- an open handle blocks the unlink. Re-opening costs a millisecond, so a server
+        should call this when it finishes serving a query rather than hold them between requests."""
+        for attr in ("_spec_fts", "_p2_fts"):
+            con = getattr(self, attr, None)
+            if con is not None:
+                try:
+                    con.close()
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+
+    def close(self) -> None:
+        self.close_fts()
+
+    def __enter__(self) -> "Corpus":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
     def spec_fts(self) -> sqlite3.Connection:
         if self._spec_fts is None:
             p = self.search_dir / "spec_fts.sqlite"
