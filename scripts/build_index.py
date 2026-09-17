@@ -150,7 +150,11 @@ def discover_specs(root: Path, indexes_dir: Optional[Path] = None) -> list[dict[
                 "sections": part.get("sections", []),
                 "equations": part.get("equations", []),
                 "tables": part.get("tables", []),
-                "pages_dir": root / "markdown" / "pages_search",
+                # Per document only. `markdown/pages_search/` itself is shared by every conversion
+                # (page_001.md and friends, no document in the name), so reading it here would fill
+                # one document's pages with another's text -- see parse_pages, which also REPLACES a
+                # page whenever the file it finds is longer.
+                "pages_dir": root / "markdown" / "pages_search" / stem,
                 "index_dir": flat,
                 "layout": "flat",
             }

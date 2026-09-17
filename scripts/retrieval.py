@@ -404,7 +404,14 @@ class Corpus:
         # fill gaps from pages_search (S400 may miss some)
         ps = self.root / "documents" / "standards" / doc / "markdown" / "pages_search"
         if not ps.is_dir():
-            ps = self.root / "markdown" / "pages_search"          # flat workspace
+            # Flat workspace, per document. Never `markdown/pages_search` itself: that folder is
+            # shared by every conversion, so its page_NNN.md belong to whichever document was
+            # converted last, not to this one.
+            for name in (n for n in (doc, meta.get("converted_stem")) if n):
+                cand = self.root / "markdown" / "pages_search" / name
+                if cand.is_dir():
+                    ps = cand
+                    break
         if ps.is_dir():
             for fp in ps.glob("page_*.md"):
                 m = re.search(r"page_(\d+)", fp.name)

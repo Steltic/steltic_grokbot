@@ -2519,7 +2519,10 @@ def export_body_markdown(
 
     body_layers = set(DEFAULT_CONTENT_LAYERS) or {ContentLayer.BODY}
     md_dir = loaded.doc_dir / "markdown"
-    pages_search = md_dir / "pages_search"
+    # Per document. In the hub's flat workspace doc_dir is the workspace itself, so a shared
+    # `markdown/pages_search/page_001.md` is written by EVERY conversion: the last one wins per page
+    # number and the index then serves one document's page text under another's section headings.
+    pages_search = md_dir / "pages_search" / loaded.stem
     pages_search.mkdir(parents=True, exist_ok=True)
 
     parts: list[str] = []
@@ -3046,8 +3049,12 @@ def run_husk_backfill_existing(
         raise FileNotFoundError(f"No equations.json under {doc_dir}")
     search_md = _resolve_search_md(doc_dir, stem)
     search_pages = parse_search_md_pages(search_md)
-    # also ingest per-page search files if present
-    pages_search = doc_dir / "markdown" / "pages_search"
+    # also ingest per-page search files if present (per document -- the folder above them is shared)
+    pages_search = doc_dir / "markdown" / "pages_search" / stem
+    if not pages_search.is_dir():
+        pages_search = doc_dir / "markdown" / "pages_search"
+        if (pages_search / "page_001.md").is_file() and any(p.is_dir() for p in pages_search.glob("*")):
+            pages_search = Path("")            # a mixed legacy folder: trust the search.md instead
     if pages_search.is_dir():
         for fp in pages_search.glob("page_*.md"):
             m = re.match(r"page_(\d+)\.md", fp.name)
@@ -3152,7 +3159,8 @@ def run(
     # Every PDF-text-layer eq id must exist in equations.json (recover_equation_ids
     # already backfills unmatched census rows as source=pdf_text) AND the display
     # token must be in searchable markdown (formula model often swallows it).
-    pages_search_dir = Path(md_stats.get("pages_search_dir") or (loaded.doc_dir / "markdown" / "pages_search"))
+    pages_search_dir = Path(md_stats.get("pages_search_dir")
+                            or (loaded.doc_dir / "markdown" / "pages_search" / loaded.stem))
     n_splice = splice_eq_ids_into_search(
         search_pages,
         pdf_census,
