@@ -73,14 +73,41 @@ def _via_pdftotext(pdf_path: Path, first: Optional[int], last: Optional[int]) ->
     return pages
 
 
+_OPEN: dict[tuple, object] = {}          # one open document at a time -- see _document()
+
+
+def _document(pdf_path: Path):
+    """The open pypdfium2 document for this file, reused across calls.
+
+    The equation-repair pass asks for single pages one at a time, hundreds of times; reopening a
+    780-page PDF for each of them is most of the wall clock. Keyed by path and mtime, so a file that
+    changes on disk is reopened. One document is kept: these passes work through a PDF at a time.
+    """
+    import pypdfium2 as pdfium
+    try:
+        key = (str(pdf_path.resolve()), pdf_path.stat().st_mtime_ns)
+    except OSError:
+        key = (str(pdf_path), 0)
+    doc = _OPEN.get(key)
+    if doc is None:
+        for k, old in list(_OPEN.items()):
+            try:
+                old.close()
+            except Exception:
+                pass
+            _OPEN.pop(k, None)
+        doc = _OPEN[key] = pdfium.PdfDocument(str(pdf_path))
+    return doc
+
+
 def _via_pypdfium2(pdf_path: Path, first: Optional[int], last: Optional[int]) -> list[str]:
     try:
-        import pypdfium2 as pdfium
+        import pypdfium2  # noqa: F401
     except ImportError:
         _announce("none")
         return []
     _announce("pypdfium2")
-    pdf = pdfium.PdfDocument(str(pdf_path))
+    pdf = _document(pdf_path)
     try:
         n = len(pdf)
         lo = max(1, first or 1)
@@ -95,8 +122,9 @@ def _via_pypdfium2(pdf_path: Path, first: Optional[int], last: Optional[int]) ->
                 tp.close()
                 page.close()
         return out
-    finally:
-        pdf.close()
+    except Exception as e:
+        LOG.warning("pypdfium2 could not read %s: %s", pdf_path.name, e)
+        return []
 
 
 def pdf_pages_text(pdf_path: Path | str, first: Optional[int] = None, last: Optional[int] = None) -> list[str]:

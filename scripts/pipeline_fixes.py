@@ -251,13 +251,17 @@ def build_example_id_aliases(sections: list[dict[str, Any]]) -> dict[str, list[s
 
 
 def pdf_page_text(pdf_path: Path, page: int) -> str:
-    import subprocess
+    """One page of a PDF as text: pdftotext -layout when Poppler is on PATH, else pypdfium2.
+
+    The third and last call site that shelled out to `pdftotext` unconditionally -- on a Windows
+    machine without Poppler that raises FileNotFoundError before any check, here in the middle of
+    the equation repair pass. See pdftext.py."""
     if not pdf_path or not Path(pdf_path).is_file() or not page:
         return ""
-    r = subprocess.run(
-        ["pdftotext", "-layout", "-f", str(page), "-l", str(page), str(pdf_path), "-"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return r.stdout or ""
+    try:
+        from pdftext import pdf_page_text as _page
+    except ImportError:                        # imported as a loose module, not from scripts/
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from pdftext import pdf_page_text as _page
+    return _page(pdf_path, int(page))
