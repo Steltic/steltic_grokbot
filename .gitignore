@@ -14,3 +14,9 @@ __pycache__/
 *.pyc
 .DS_Store
 Thumbs.db
+
+# pack_distributable.py writes a standalone bundle (its own scripts/ copy included) to --out.
+# One was once committed here, and post_install copied it over the workspace -- reverting the
+# retrieval code to that snapshot on every install. The bundle is built at packing time, from
+# scripts/; it does not belong inside the repo.
+engineering_rag_phase2/scripts/
