@@ -193,29 +193,112 @@ def normalize_section_id(q: str) -> str:
     return s.strip().rstrip(".")
 
 
-def fts_escape(query: str) -> str:
-    """Build a reasonably safe FTS5 MATCH query; keep quoted phrases.
+# --- FTS5 query construction -------------------------------------------------------------------
+# Two things about this corpus break a naive MATCH expression, and both were live faults:
+#
+#   E3.4a   FTS5 reads the '.' as syntax and raises OperationalError. The caller caught it with a
+#           bare `continue`, so the single most valuable query form in the whole system -- the exact
+#           printed clause id the contract tells the agent to use -- silently contributed nothing.
+#   lateral-torsional
+#           Splitting the hyphen into two loose terms grows the term count, and FTS5 ANDs
+#           space-separated terms. "flexural strength compact I-shape lateral-torsional buckling F2"
+#           went out as a nine-term AND and matched one chunk in all of AISC 360-22.
+#
+# So: quote anything the parser would choke on, keep compounds adjacent instead of AND-ing their
+# pieces, and -- because an AND of nine engineering words is a question no chunk can answer -- offer
+# the caller progressively looser forms of the same question to fall through to.
 
-    Hyphens are FTS5 NOT operators, so hyphenated terms are quoted or split.
-    """
+_FTS_BARE = re.compile(r"^[0-9A-Za-z_]+$")
+_FTS_HASDIGIT = re.compile(r"[0-9]")
+# F2, F2.2, E3.4a, 16.1-2, C-F2.1, D1.1a: a clause/equation/table id as the standards print it.
+_FTS_ID = re.compile(r"^[A-Za-z]{0,3}[0-9][0-9A-Za-z]*(?:[.\-][0-9A-Za-z]+)*$")
+# Function words only. Nothing here carries engineering meaning, and everything that does is kept:
+# dropping "design" or "strength" would change the question, not loosen it.
+_FTS_STOP = {"a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is", "of", "on",
+             "or", "per", "that", "the", "this", "to", "with"}
+_GREEK = "ΩωφΦλΛαΑβγδεΔπΠσΣμΜ°"
+
+
+def _fts_token(tok: str) -> str:
+    """One token as FTS5 can safely parse it: bare when it is plain, a quoted phrase otherwise.
+
+    Quoting is what makes `E3.4a` legal and what keeps `lateral-torsional` a two-word phrase rather
+    than two independent AND-ed terms."""
+    if tok.startswith('"') and tok.endswith('"') and len(tok) >= 2:
+        return tok
+    cleaned = re.sub(rf"[^\w.\-\u2013\u2014/{_GREEK}]", "", tok, flags=re.U).strip(".-\u2013\u2014/")
+    if not cleaned:
+        return ""
+    if _FTS_BARE.match(cleaned):
+        return cleaned
+    inner = re.sub(r"\s+", " ", re.sub(r"[-\u2013\u2014/.]+", " ", cleaned)).strip()
+    return '"' + inner + '"' if inner else ""
+
+
+def _fts_parts(query: str) -> tuple[list[str], list[str]]:
+    """Split a question into (ids, words), each already FTS5-safe.
+
+    An id is the anchor: it is what makes a relaxed, OR-ed query land on F2 rather than drifting to
+    F3, so it is ANDed even when everything else is loosened."""
+    ids: list[str] = []
+    words: list[str] = []
+    for m in re.finditer(r'"[^"]+"|\S+', nfkc(query).strip()):
+        raw = m.group(0)
+        safe = _fts_token(raw)
+        if not safe:
+            continue
+        bare = raw.strip('"')
+        if _FTS_HASDIGIT.search(bare) and _FTS_ID.match(bare):
+            if safe not in ids:
+                ids.append(safe)
+        elif bare.lower() not in _FTS_STOP and safe not in words:
+            words.append(safe)
+    return ids, words
+
+
+def fts_escape(query: str) -> str:
+    """The strict form: every term required. Highest precision, and the first thing tried."""
     q = nfkc(query).strip()
     if not q:
         return q
     if any(tok in q.upper() for tok in (" AND ", " OR ", " NOT ", " NEAR ")):
-        return q
-    parts: list[str] = []
-    for m in re.finditer(r'"[^"]+"|\S+', q):
-        tok = m.group(0)
-        if tok.startswith('"') and tok.endswith('"') and len(tok) >= 2:
-            parts.append(tok)
-            continue
-        # split hyphen/en-dash so 'lateral-torsional' matches 'lateral torsional'
-        bits = [b for b in re.split(r'[-–—/]+', tok) if b]
-        for b in bits:
-            cleaned = re.sub(r'[^\w.ΩωφΦλΛαΑβγδεΔπΠσΣμΜ°0-9]', '', b, flags=re.U)
-            if cleaned:
-                parts.append(cleaned)
-    return ' '.join(parts) if parts else q
+        return q            # the caller wrote FTS5 by hand; leave it alone
+    ids, words = _fts_parts(q)
+    parts = ids + words
+    return " ".join(parts) if parts else ""
+
+
+def fts_strategies(query: str) -> list[tuple[str, str]]:
+    """The same question at decreasing strictness, most precise first.
+
+    The caller walks this list and keeps collecting until it has enough rows, so a strict hit always
+    outranks a loose one and recall only ever gets added on top -- never swapped in."""
+    q = nfkc(query).strip()
+    if not q:
+        return []
+    if any(tok in q.upper() for tok in (" AND ", " OR ", " NOT ", " NEAR ")):
+        return [("verbatim", q)]
+    ids, words = _fts_parts(q)
+    out: list[tuple[str, str]] = []
+
+    def add(label: str, expr: str) -> None:
+        if expr and all(expr != e for _, e in out):
+            out.append((label, expr))
+
+    add("strict", " ".join(ids + words))
+    if ids and words:
+        anchor = ids[0] if len(ids) == 1 else "(" + " OR ".join(ids) + ")"
+        # the id stays mandatory; the prose becomes a scoring aid rather than a gate
+        add("id-anchored", f"{anchor} AND (" + " OR ".join(words) + ")")
+    phrases = [w for w in words if w.startswith('"')]
+    if phrases and len(words) > len(phrases):
+        rest = [w for w in words if not w.startswith('"')]
+        add("phrase-anchored", " ".join(ids + phrases) + " AND (" + " OR ".join(rest) + ")")
+    if ids:
+        add("ids-only", " ".join(ids) if len(ids) == 1 else "(" + " OR ".join(ids) + ")")
+    if len(words) > 1:
+        add("any-term", " OR ".join(words))
+    return out
 
 
 class QueryCache:
@@ -450,6 +533,15 @@ class Corpus:
                 parts.append(f"{rel}:{st.st_size}:{st.st_mtime_ns}")
             except OSError:
                 parts.append(f"{rel}:-")
+        # ...and what computed them. A fix to the query builder changes the right answer to a
+        # question whose index has not moved, and without this the cache would go on serving the
+        # answer the broken version gave. Keyed on this file's own size and mtime, so upgrading the
+        # code invalidates the cache exactly the way rebuilding the index does.
+        try:
+            st = Path(__file__).stat()
+            parts.append(f"retrieval.py:{st.st_size}:{st.st_mtime_ns}")
+        except OSError:
+            parts.append("retrieval.py:-")
         return hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
 
     def cache(self) -> Optional[QueryCache]:
@@ -494,13 +586,21 @@ class Corpus:
             self._spec_fts.row_factory = sqlite3.Row
         return self._spec_fts
 
-    def p2_fts(self) -> sqlite3.Connection:
+    def p2_fts(self) -> Optional[sqlite3.Connection]:
+        """The OpenSees / examples index, which is optional. A machine that converted only the
+        standards has no phase-2 database, and opening a missing file raised OperationalError out
+        of the middle of a query -- taking down a specification search that never needed it."""
         if self._p2_fts is None:
             p = self.search_dir / "phase2_fts.sqlite"
             if not p.is_file():
                 p = self.root / "engineering_rag_phase2" / "search" / "phase2_fts.sqlite"
-            self._p2_fts = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
-            self._p2_fts.row_factory = sqlite3.Row
+            if not p.is_file():
+                return None
+            try:
+                self._p2_fts = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+                self._p2_fts.row_factory = sqlite3.Row
+            except sqlite3.Error:
+                return None
         return self._p2_fts
 
     def edition_for(self, doc: Optional[str]) -> Optional[str]:
@@ -1389,6 +1489,10 @@ class Corpus:
                     hit[k] = r[k]
             hit["corpus"] = r.get("corpus") or hit["corpus"]
             hit["collection"] = r.get("collection") or hit["collection"]
+            if r.get("strategy"):
+                # Carried through to the caller so a report can tell an exact match from one that
+                # only appeared after the question was loosened.
+                hit["strategy"] = r["strategy"]
             hits.append(hit)
         if not hits:
             # retry keyword as last FTS miss before caller tries keyword
@@ -1401,7 +1505,14 @@ class Corpus:
                     aliases=self._alias_suggestions(query),
                 ),
             }
-        return {"found": True, "query": query, "type": "fts", "hits": hits}
+        loosened = sorted({h["strategy"] for h in hits if h.get("strategy") and h["strategy"] != "strict"})
+        out = {"found": True, "query": query, "type": "fts", "hits": hits}
+        if loosened:
+            out["match_strategy"] = loosened
+            out["note"] = ("Not every term matched. These hits come from a loosened form of the "
+                           "question (" + ", ".join(loosened) + "); check each one governs the case "
+                           "before citing it.")
+        return out
 
     def _fts_spec(
         self,
@@ -1414,10 +1525,21 @@ class Corpus:
         rows: list[dict[str, Any]] = []
         seen = set()
         resolved = resolve_doc(doc) if doc else None
-        for q in variants:
-            match = fts_escape(q)
-            if not match:
-                continue
+        # The same question at decreasing strictness, tier by tier across every alias variant, so a
+        # strict hit from ANY variant outranks a loose hit from the first. Rows accumulate: recall is
+        # added under precision, never swapped in for it.
+        plan: list[tuple[str, str]] = []
+        _seen_expr: set[str] = set()
+        _per_variant = [fts_strategies(q) for q in variants]
+        for _tier in range(max((len(s) for s in _per_variant), default=0)):
+            for _strats in _per_variant:
+                if _tier >= len(_strats):
+                    continue
+                _label, _expr = _strats[_tier]
+                if _expr and _expr not in _seen_expr:
+                    _seen_expr.add(_expr)
+                    plan.append((_label, _expr))
+        for strategy, match in plan:
             sql = (
                 "SELECT rec_id, kind, doc, edition, section_id, eq_id, table_id, part, "
                 "collection, pdf_page, printed_label, title, body, "
@@ -1492,6 +1614,9 @@ class Corpus:
                         "pdf_page": r["pdf_page"],
                         "printed_label": r["printed_label"],
                         "title": r["title"],
+                        # which tier answered: 'strict' means every term matched, anything else
+                        # means the question had to be loosened to find this row
+                        "strategy": strategy,
                     }
                 )
             if len(rows) >= limit:
@@ -1503,13 +1628,24 @@ class Corpus:
         self, variants: list[str], collection: Optional[str], limit: int
     ) -> list[dict[str, Any]]:
         con = self.p2_fts()
+        if con is None:                       # no phase-2 corpus on this machine; not an error
+            return []
         rows: list[dict[str, Any]] = []
         seen = set()
         byid = {s.get("id"): s for s in self.sections if s.get("collection") != "specification"}
-        for q in variants:
-            match = fts_escape(q)
-            if not match:
-                continue
+        # same tiered plan as the specification side: strict first, loosened only to fill
+        plan: list[tuple[str, str]] = []
+        _seen_expr: set[str] = set()
+        _per_variant = [fts_strategies(q) for q in variants]
+        for _tier in range(max((len(s) for s in _per_variant), default=0)):
+            for _strats in _per_variant:
+                if _tier >= len(_strats):
+                    continue
+                _label, _expr = _strats[_tier]
+                if _expr and _expr not in _seen_expr:
+                    _seen_expr.add(_expr)
+                    plan.append((_label, _expr))
+        for strategy, match in plan:
             sql = (
                 "SELECT chunk_id, collection, title, nav, "
                 "snippet(chunks, 6, '>>', '<<', '...', 40) AS snip, "
