@@ -1676,6 +1676,10 @@ def census_pdf_eq_ids(
 
 
 _EMBEDDED_ID_RE = re.compile(r"\(((?:C-)?[A-Z]\d+(?:\.\d+)*-\d+[a-z]?)\)")
+# AISC 358 (5.7-1) and ASCE 41 (7-1) print no chapter letter; a bare "(2-1)" could also be a
+# subtraction inside the formula, so the numeric form counts only where the printed id sits:
+# at the very end of the block.
+_EMBEDDED_NUM_ID_RE = re.compile(r"\((C?\d{1,2}(?:\.\d+)*-\d{1,3}[a-z]?)\)$")
 
 
 def printed_id_in_latex(latex: Optional[str]) -> Optional[str]:
@@ -1685,7 +1689,7 @@ def printed_id_in_latex(latex: Optional[str]) -> Optional[str]:
         return None
     t = re.sub(r"\s+", "", latex)
     t = t.replace("\\cdot", "-").replace("^{-", "-").replace("{-}", "-").replace("{-", "-").replace("}", "")
-    m = _EMBEDDED_ID_RE.search(t)
+    m = _EMBEDDED_ID_RE.search(t) or _EMBEDDED_NUM_ID_RE.search(t)
     return m.group(1) if m else None
 
 
@@ -2024,6 +2028,10 @@ def synthesize_asce_subsections(
         if not re.match(r"^C?\d+", sid):
             continue
         if t.label not in ("section_header", "title"):
+            # a paragraph or list item: "0.03 in. (0.76 mm)" and "0.25 DX, 0.50 DX" parse as
+            # headings 0.03 / 0.25 -- a heading's number starts at 1 and its title is Title Case
+            if sid.lstrip("C").startswith("0") or not title[:1].isupper():
+                continue
             title = split_run_in_heading(title)      # the heading ran into its paragraph
         if len(title) > 200:
             title = title[:200].rstrip()

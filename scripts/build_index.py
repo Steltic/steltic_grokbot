@@ -1076,9 +1076,31 @@ def main() -> None:
     ap.add_argument("--root", type=Path, default=None)
     ap.add_argument("--indexes", type=Path, default=None,
                     help="where the converter's per-document index JSONs are (default: <root>/indexes)")
+    ap.add_argument("--no-audit", action="store_true",
+                    help="skip the corpus audit that runs after the build (audit_corpus.py)")
     args = ap.parse_args()
     root = args.root or find_root()
     build(root, args.indexes)
+    if not args.no_audit:
+        # The build's own stats ("no id collisions") said nothing while 1,905 records of AISC 358
+        # carried AISC 341's text. The audit checks what a query cannot see; it never fails the
+        # build, it says so loudly and leaves indexes/audit_report.md behind.
+        try:
+            from audit_corpus import audit, render_md
+            report = audit(Path(root), smoke=True)
+            md = render_md(report)
+            out_idx = Path(root) / "indexes"
+            (out_idx / "audit_report.md").write_text(md, encoding="utf-8")
+            (out_idx / "audit_report.json").write_text(json.dumps(report, indent=1, ensure_ascii=False), encoding="utf-8")
+            c = report["counts"]
+            print(f"[audit] {c['FAIL']} FAIL, {c['WARN']} WARN, {c['INFO']} INFO -- {out_idx / 'audit_report.md'}")
+            for f in report["findings"]:
+                if f["level"] == "FAIL":
+                    print(f"[audit] FAIL {f['doc']} {f['code']}: {f['message']}")
+            if c["FAIL"]:
+                print("[audit] the index is serving wrong records; see skills/CHECK-AND-CLEAN-CONVERSIONS.md")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[audit] skipped: {exc.__class__.__name__}: {exc}")
 
 
 if __name__ == "__main__":

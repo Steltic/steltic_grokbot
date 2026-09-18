@@ -13,9 +13,10 @@ skills/
   Skill_query_file_manager_PACKAGED.md   load into the Query file manager bot
   Skill_querying_PACKAGED.md             load into HR Steel App, CFS Steel App, and Steltic Nonlinear
   Skill_SNL_PACKAGED.md                  load into Steltic Nonlinear (with Skill_querying_PACKAGED.md)
+  CHECK-AND-CLEAN-CONVERSIONS.md         give to any LLM after converting: how to audit the corpus and clean it
 scripts/                                 conversion + retrieval pipeline (Python)
   convert_pdf.py  recover_image_pages.py  postprocess.py  validate.py
-  build_index.py  search.py  serve_queue.py  validate_merged.py
+  build_index.py  search.py  serve_queue.py  validate_merged.py  audit_corpus.py
   retrieval.py  pack_distributable.py  pipeline_fixes.py  aliases.json
 engineering_rag_phase2/                  distributable phase-2 data (STANDARD, not optional):
   documents/opensees/…                   OpenSees / OpenSeesPy documentation chunks
@@ -169,6 +170,14 @@ re-verify every one before applying any of this to a different edition.
   content are not authoritative.
 - Spec-derived content never leaves the Query file manager computer (see `NOTICE.md` and the
   `.gitignore` guards).
+- **Audit before you design.** A converted corpus can be wrong in ways no query reveals — another
+  document's text under this one's ids, commentary tagged as provisions, equation LaTeX belonging
+  to the neighbouring equation. `build_index.py` runs `audit_corpus.py` after every build and
+  leaves `indexes/audit_report.md`; the hub's *Audit corpus* tab runs it on demand. Zero FAIL is
+  the bar. Give `skills/CHECK-AND-CLEAN-CONVERSIONS.md` to whatever LLM checks your conversions:
+  it says what to look at beyond the audit and how to clean each finding (a re-process, never a
+  hand edit). Re-process with the source PDF: equation ids, table captions and the ligature repair
+  all read it.
 
 ## License
 
