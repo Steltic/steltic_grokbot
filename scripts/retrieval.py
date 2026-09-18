@@ -256,6 +256,20 @@ def _fts_parts(query: str) -> tuple[list[str], list[str]]:
     return ids, words
 
 
+def fts_ids(query: str) -> list[str]:
+    """The clause / equation ids a question names, in the standards' own spelling (E3, F2.2, E3.4a).
+
+    Used to rank: if the engineer names E3, the row that IS E3 should outrank a table that merely
+    mentions it. Without this a strict all-terms query can fill its quota with pages and tables that
+    happen to contain every word, and the clause itself never appears."""
+    out: list[str] = []
+    for m in re.finditer(r'"[^"]+"|\S+', nfkc(query).strip()):
+        bare = re.sub(r"[^\w.\-]", "", m.group(0).strip('"')).strip(".-")
+        if bare and _FTS_HASDIGIT.search(bare) and _FTS_ID.match(bare) and bare.upper() not in out:
+            out.append(bare.upper())
+    return out
+
+
 def fts_escape(query: str) -> str:
     """The strict form: every term required. Highest precision, and the first thing tried."""
     q = nfkc(query).strip()
@@ -1539,6 +1553,14 @@ class Corpus:
                 if _expr and _expr not in _seen_expr:
                     _seen_expr.add(_expr)
                     plan.append((_label, _expr))
+        want_ids = set()
+        for q in variants:
+            want_ids.update(fts_ids(q))
+        # With an id in the question the strict tier alone is not enough: it can fill its quota with
+        # pages and tables that contain every word while the clause itself, which uses the standard's
+        # own vocabulary rather than the engineer's, never matches. So the id-anchored tier always
+        # runs too, and named rows are ranked to the top below.
+        must_run = {"strict", "id-anchored"} if want_ids else {"strict"}
         for strategy, match in plan:
             sql = (
                 "SELECT rec_id, kind, doc, edition, section_id, eq_id, table_id, part, "
@@ -1569,6 +1591,18 @@ class Corpus:
                     score = (r["score"] or 0) + 20.0
                 else:
                     score = r["score"]
+                # A whole scanned page holds far more words than a clause, so on a loosened,
+                # many-term query it matches more of them and bm25 floats it above the clause the
+                # engineer actually asked for. A page is a fallback -- something to read when no
+                # clause matched -- not a better answer than F2.2 itself.
+                if (r["kind"] if "kind" in r.keys() else "") == "page":
+                    score = (score or 0) + 8.0
+                if want_ids:
+                    sid = str(r["section_id"] or "").upper()
+                    eid = str(r["eq_id"] or "").upper()
+                    if any(sid == i or sid.startswith(i + ".") or eid == i or eid.startswith(i + "-")
+                           for i in want_ids):
+                        score = (score or 0) - 25.0
                 tid = (r["table_id"] or "") if "table_id" in r.keys() else ""
                 qjoin = " ".join(variants).lower()
                 if tid == "12.2-1" and any(
@@ -1619,7 +1653,7 @@ class Corpus:
                         "strategy": strategy,
                     }
                 )
-            if len(rows) >= limit:
+            if len(rows) >= limit and strategy not in must_run:
                 break
         rows.sort(key=lambda r: r.get("score") or 0)
         return rows[:limit]

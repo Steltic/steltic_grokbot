@@ -111,3 +111,27 @@ def test_a_handwritten_fts_expression_is_left_alone():
     q = 'F2 AND (flexural OR buckling)'
     assert fts_escape(q) == q
     assert fts_strategies(q) == [("verbatim", q)]
+
+
+# --- the ids a question names, and what they are for ---------------------------------------------
+
+def test_the_ids_a_question_names_are_recognised():
+    from retrieval import fts_ids
+    assert fts_ids(A360) == ["F2"]
+    assert fts_ids(A341) == ["E3.4A"]
+    assert fts_ids("panel zone shear strength E3.6e") == ["E3.6E"]
+    assert fts_ids("tension field action G2.2 and equation G2-6") == ["G2.2", "G2-6"]
+
+
+def test_prose_is_not_mistaken_for_an_id():
+    from retrieval import fts_ids
+    for q in ("lateral-torsional buckling of compact shapes",
+              "strong column weak beam",
+              "acceptance criteria for nonlinear procedures"):
+        assert fts_ids(q) == [], q
+
+
+def test_an_id_without_digits_is_not_an_id():
+    from retrieval import fts_ids
+    # 'RBS', 'SCBF', 'WUF-W' are abbreviations, not clause numbers
+    assert fts_ids("RBS SCBF WUF-W BFP connections") == []
