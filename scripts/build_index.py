@@ -151,15 +151,21 @@ def discover_specs(root: Path, indexes_dir: Optional[Path] = None) -> list[dict[
                 "layout": "per-document",
             }
 
-    # The converter writes here and nothing else does, so these records need no sorting out. The
-    # bare <root>/indexes below it is the legacy location -- shared with this builder's own output,
-    # which is why the records there have to be told apart (see below). A workspace converted
-    # before the split keeps working; one converted after it takes this branch.
-    flat = Path(indexes_dir) if indexes_dir else None
-    if flat is None:
-        converted_dir = root / "indexes" / "converted"
-        flat = converted_dir if (converted_dir / "documents.json").is_file() else (root / "indexes")
-    if (flat / "documents.json").is_file():
+    # The converter writes to <root>/indexes/converted (convert_pdf.py, since the split) or to the
+    # bare <root>/indexes (the hub's Re-process tab, and every workspace converted before the
+    # split). The bare location is also where this builder writes its own output, so records there
+    # have to be told apart (see below). Both locations are read: a workspace holding four
+    # documents in the legacy set and a fifth freshly converted into converted/ must index five,
+    # not one -- reading only whichever set existed first silently dropped the others.
+    if indexes_dir:
+        flat_dirs = [Path(indexes_dir)]
+    else:
+        flat_dirs = [root / "indexes" / "converted", root / "indexes"]
+    converted: list[tuple[dict[str, Any], dict[str, dict[str, list]], Path]] = []
+    built: list[tuple[dict[str, Any], dict[str, dict[str, list]], Path]] = []
+    for flat in flat_dirs:
+        if not (flat / "documents.json").is_file():
+            continue
         docs = _as_list(load_json(flat / "documents.json"))
         secs = _as_list(load_json(flat / "sections.json")) if (flat / "sections.json").is_file() else []
         eqs = _as_list(load_json(flat / "equations.json")) if (flat / "equations.json").is_file() else []
@@ -170,8 +176,8 @@ def discover_specs(root: Path, indexes_dir: Optional[Path] = None) -> list[dict[
                 d = r.get("doc")
                 if d:
                     by_doc.setdefault(d, {}).setdefault(key, []).append(r)
-        # build() writes its unified output over the same <root>/indexes the converter writes to, so
-        # this file mixes three kinds of record. Separate them before anything else:
+        # build() writes its unified output over <root>/indexes, so that file mixes three kinds of
+        # record. Separate them before anything else:
         #   * phase-2 (collection opensees/examples)  -- not specifications, skip;
         #   * this builder's own output from a previous run (it stamps collection=specification and
         #     stores the document under its CANONICAL id) -- a stale copy of a document the
@@ -179,38 +185,55 @@ def discover_specs(root: Path, indexes_dir: Optional[Path] = None) -> list[dict[
         #     twice ("8 specification(s)" for five documents, three of them listed as both
         #     AISC_360_22 and A360_22);
         #   * the converter's own records (postprocess writes no `collection`) -- the truth.
-        converted, built = [], []
         for rec in docs:
             kind = rec.get("collection") or rec.get("corpus")
             if kind in P2_COLLECTIONS:
                 continue
-            (built if kind == "specification" else converted).append(rec)
-        seen_converted = {r.get("id") for r in converted} | {r.get("converted_stem") for r in converted}
-        for rec in built:
-            # keep a built record only when no conversion describes that document any more
-            if rec.get("id") in seen_converted or rec.get("converted_stem") in seen_converted:
-                continue
-            converted.append(rec)
-        for rec in converted:
-            stem = rec.get("id") or rec.get("stem") or rec.get("doc")
-            if not stem or stem in found:          # a per-document tree wins: it is the curated one
-                continue
-            part = by_doc.get(stem, {})
-            found[stem] = {
-                "stem": stem,
-                "canonical": resolve_doc(stem) or stem,
-                "doc": rec,
-                "sections": part.get("sections", []),
-                "equations": part.get("equations", []),
-                "tables": part.get("tables", []),
-                # Per document only. `markdown/pages_search/` itself is shared by every conversion
-                # (page_001.md and friends, no document in the name), so reading it here would fill
-                # one document's pages with another's text -- see parse_pages, which also REPLACES a
-                # page whenever the file it finds is longer.
-                "pages_dir": root / "markdown" / "pages_search" / stem,
-                "index_dir": flat,
-                "layout": "flat",
-            }
+            (built if kind == "specification" else converted).append((rec, by_doc, flat))
+
+    def _names(rec: dict[str, Any]) -> set[str]:
+        ids = {rec.get("id"), rec.get("converted_stem")}
+        ids |= {resolve_doc(i) for i in list(ids) if i}
+        return {i for i in ids if i}
+
+    seen_converted: set[str] = set()
+    for rec, _, _ in converted:
+        seen_converted |= _names(rec)
+    for rec, by_doc, flat in built:
+        # keep a built record only when no conversion, in either location, describes that document
+        if _names(rec) & seen_converted:
+            continue
+        converted.append((rec, by_doc, flat))
+    # flat_dirs is read in priority order: converted/ first, the legacy set only for documents it
+    # does not describe. postprocess redirects a caller aiming at <root>/indexes to converted/, so
+    # nothing writes converter records to the legacy set any more; ones still there predate that.
+    for rec, by_doc, flat in converted:
+        stem = rec.get("id") or rec.get("stem") or rec.get("doc")
+        if not stem or stem in found:          # a per-document tree wins: it is the curated one
+            continue
+        canonical = resolve_doc(stem) or stem
+        prior = next((f for f in found.values() if f.get("canonical") == canonical), None)
+        if prior is not None:
+            if rec.get("collection") != "specification":
+                print(f"[index] {stem}: converter records in {flat} ignored -- {prior['index_dir']} "
+                      "describes this document; re-process writes there now")
+            continue
+        part = by_doc.get(stem, {})
+        found[stem] = {
+            "stem": stem,
+            "canonical": canonical,
+            "doc": rec,
+            "sections": part.get("sections", []),
+            "equations": part.get("equations", []),
+            "tables": part.get("tables", []),
+            # Per document only. `markdown/pages_search/` itself is shared by every conversion
+            # (page_001.md and friends, no document in the name), so reading it here would fill
+            # one document's pages with another's text -- see parse_pages, which also REPLACES a
+            # page whenever the file it finds is longer.
+            "pages_dir": root / "markdown" / "pages_search" / stem,
+            "index_dir": flat,
+            "layout": "flat" if flat.name != "converted" else "flat:converted",
+        }
 
     order = {stem: i for i, stem in enumerate(SPEC_STEMS)}
     return sorted(found.values(), key=lambda d: (order.get(d["stem"], len(SPEC_STEMS)), d["stem"]))
@@ -279,6 +302,29 @@ SEED_GROUPS = [
 
 def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+_ROMAN_TAIL_RE = re.compile(r"^[ivxlcdm]+$", re.I)
+_TOC_LINE_RES = [
+    re.compile(r"(\.\s?){3,}\s*[0-9ivxlc]{1,4}\b", re.I),          # dot leaders then a page number
+    re.compile(r"\|\s*[0-9ivxlc]{1,4}\s*\|?\s*$", re.I),            # a TOC rendered as a table: last cell is the page
+    re.compile(r"^\s*\|?\s*(CHAPTER|APPENDIX)\s+[A-Z0-9]+\b", re.I),
+]
+
+
+def is_toc_page(printed_label: Any, body: str) -> bool:
+    """A roman-numbered front-matter page whose lines are headings trailed by page numbers."""
+    tail = str(printed_label or "").strip().split("-")[-1]
+    if not tail or not _ROMAN_TAIL_RE.fullmatch(tail):
+        return False
+    if re.search(r"TABLE\s+OF\s+CONTENTS", body, re.I):
+        return True
+    lines = [ln.strip() for ln in body.splitlines() if ln.strip() and not ln.strip().startswith("<!--")]
+    lines = [ln for ln in lines if not re.fullmatch(r"[|\-:\s]+", ln)]      # markdown table separators
+    if len(lines) < 6:
+        return False
+    hits = sum(1 for ln in lines if any(rx.search(ln) for rx in _TOC_LINE_RES))
+    return hits >= 0.5 * len(lines)
 
 
 def sanitize_fts(text: Any) -> str:
@@ -919,12 +965,20 @@ def build(root: Path, indexes_dir: Optional[Path] = None) -> dict[str, Any]:
 
     # Page-level FTS so commentary figures/prose (341 C-F2.18 / pdf 371 "2 t")
     # are searchable even when they are not a section start. Keep "2 t" tokens.
+    skipped_toc = 0
     for stem, pages in spec_pages.items():
         meta = next((d for d in documents if d.get("id") == stem), {}) or {}
         edition = meta.get("edition")
         for pno, rec in pages.items():
             body = rec.get("body") or ""
             if len(body.strip()) < 40:
+                continue
+            if is_toc_page(rec.get("printed_label"), body):
+                # A table of contents is every heading in the document with a page number after
+                # it: it matches any query that names a chapter and was outranking the clause
+                # ("DuraFuse" answered with AISC 358 pdf 11 and 16, both TOC pages). The symbols
+                # and glossary pages, also roman-numbered, stay: they define terms.
+                skipped_toc += 1
                 continue
             part = rec.get("part") or "standard"
             printed = rec.get("printed_label")
@@ -948,6 +1002,8 @@ def build(root: Path, indexes_dir: Optional[Path] = None) -> dict[str, Any]:
                 )
             )
 
+    if skipped_toc:
+        print(f"[index] {skipped_toc} table-of-contents page(s) left out of the page index")
     clean_rows = []
     for row in fts_rows:
         cr = []

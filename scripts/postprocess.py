@@ -253,6 +253,16 @@ AISC_APPENDIX_EQ_RE = re.compile(
 ASCE_EQ_PARENS_RE = re.compile(
     r"\(\s*((?:C-?)?\d+(?:\.\d+)+-\d+[a-z]?(?:\.SI)?)\s*\)"
 )
+# ASCE/SEI 41: (7-1) / (11-28a) / (C7-3) -- chapter number, no dot. Too loose to run on every
+# document (a parenthesised range would pass), so run() enables it for ASCE 41 only; without it
+# the 2023 edition yielded 33 identified equations for 335 printed ids.
+# ASCE 41 also parenthesises its cross-references -- "in accordance with Eq. (7-28)" -- where
+# AISC writes "Equation F2-1"; only the bare "(7-28)" that closes an equation line is a
+# definition site, so a match with the `ref` prefix is skipped (587 reference rows otherwise).
+ASCE41_EQ_PARENS_RE = re.compile(
+    r"(?P<ref>(?:Eqs?\.|Equations?)\s*)?\(\s*(?P<id>C?\d{1,2}-\d{1,3}[a-z]?)\s*\)"
+)
+EXTRA_EQ_PARENS_RES: list["re.Pattern[str]"] = []
 TABLE_ID_RE = re.compile(
     r"Table\s+((?:C-)?[A-Z]?\d[\w.\-]*[0-9A-Za-z])",
     re.I,
@@ -476,24 +486,27 @@ PROFILES: dict[str, CommentaryProfile] = {
             r"^COMMENTARY SYMBOLS",
         ],
         notes=(
-            "ANSI/AISC 342-22 (Evaluation and Retrofit). UNVALIDATED: written from the AISC house "
-            "convention that 341 and 358 follow, not from the PDF -- the cover page, the printed "
-            "label scheme and whether section ids repeat across the two halves have NOT been "
-            "checked against 342 itself. Verify before trusting part=standard vs part=commentary "
-            "for this document."
+            "ANSI/AISC 342-22: provisions pdf 33-166 (printed arabic 1-134, roman front matter), "
+            "commentary cover 'COMMENTARY / on the Seismic Provisions for Evaluation and Retrofit "
+            "of Existing Structural Steel Buildings' on pdf 167 (printed 135), printed numbers "
+            "continue (qualified C-135...), section ids repeat across the halves as in AISC 341. "
+            "Verified against the PDF 2026-09-18."
         ),
     ),
     "asce41": CommentaryProfile(
         name="asce41",
+        # ASCE 41-23 prints no "COMMENTARY TO STANDARD" cover page: after Chapter 18 (reference
+        # documents, pdf 342) and Appendices A-C (pdf 345-398) the commentary half simply opens
+        # with "CHAPTER C1 GENERAL REQUIREMENTS" / "C1.1 SCOPE" on pdf 400 and runs C1..C17 to
+        # the end. The provisions half has no C-prefixed headings.
         cover_header_regexes=[r"COMMENTARY TO STANDARD ASCE/SEI\s*41", r"COMMENTARY TO STANDARD ASCE"],
-        running_header_regexes=[r"COMMENTARY TO STANDARD ASCE"],
-        body_heading_regexes=[r"^COMMENTARY TO STANDARD ASCE"],
+        running_header_regexes=[r"COMMENTARY TO STANDARD ASCE", r"^CHAPTER\s+C\d+\b"],
+        body_heading_regexes=[r"^CHAPTER\s+C\d+\b", r"^C\d+\.\d+\s+[A-Z]"],
         notes=(
-            "ASCE/SEI 41-23 (Seismic Evaluation and Retrofit of Existing Buildings). UNVALIDATED: "
-            "copied from the ASCE 7 convention. ASCE 41 may instead carry its commentary INLINE as "
-            "C-prefixed sections within each chapter rather than as a separate half, in which case "
-            "this profile finds no boundary and everything is filed as part=standard. Check the PDF "
-            "before relying on the split."
+            "ASCE/SEI 41-23: provisions chapters 1-18 (pdf 38-344, printed arabic from pdf 48), "
+            "appendices A-C, then the commentary as a separate half, CHAPTER C1 at pdf 400 "
+            "(printed 353) through C17; printed page numbers continue across the split. Verified "
+            "against the PDF 2026-09-18."
         ),
     ),
     "aisi_s100": CommentaryProfile(
@@ -1005,6 +1018,15 @@ def find_eq_ids_in_text(text: str, section_hint: Optional[str] = None) -> list[t
         if canon and canon not in seen:
             seen.add(canon)
             out.append((canon, m.group(0)))
+    # Document-specific forms switched on by run() (ASCE 41's (7-1)).
+    for rx in EXTRA_EQ_PARENS_RES:
+        for m in rx.finditer(text):
+            if m.groupdict().get("ref"):
+                continue
+            canon = normalize_eq_inner(m.group("id"), None)
+            if canon and canon not in seen:
+                seen.add(canon)
+                out.append((canon, m.group(0)))
     spaced = collapse_spaced_tokens(text)
     if spaced:
         for m in re.finditer(
@@ -1108,6 +1130,69 @@ class LoadedDoc:
     texts: list[TextItem]
     tables_raw: list[dict[str, Any]]
     formulas: list[TextItem]
+    # Applied to every exported page of searchable markdown (see repair_split_ligatures).
+    text_fixup: Optional[Any] = None
+
+
+# ---------------------------------------------------------------------------
+# Split ligatures: "retro fi t", "de fl ection", "speci fi ed"
+# ---------------------------------------------------------------------------
+
+_LIGATURE_GLYPHS = {"\ufb00": "ff", "\ufb01": "fi", "\ufb02": "fl", "\ufb03": "ffi", "\ufb04": "ffl"}
+_SPLIT_LIGATURE_RE = re.compile(r"(?<![A-Za-z])(?:([A-Za-z]+) )?(ffi|ffl|ff|fi|fl) ([a-z]+)")
+
+
+def pdf_vocabulary(page_texts: Iterable[str]) -> set[str]:
+    """Every word the PDF's own text layer contains, lower-cased, ligature glyphs expanded."""
+    vocab: set[str] = set()
+    for text in page_texts:
+        for g, plain in _LIGATURE_GLYPHS.items():
+            text = text.replace(g, plain)
+        vocab.update(w.lower() for w in re.findall(r"[A-Za-z]{2,}", text))
+    return vocab
+
+
+def repair_split_ligatures(text: str, vocab: set[str]) -> str:
+    """Re-join the fi/fl/ff ligatures Docling split into their own tokens.
+
+    ASCE 41-23 came out of Docling with 6,005 ' fi ' and 1,744 ' fl ' splits -- 'retro fi t',
+    'speci fi ed', 'de fi ned', 'in fi ll', ' fl exural' -- so an FTS query for *retrofit* or
+    *flexural* could not match that document at all. The pattern alone cannot tell 'de fl ection'
+    (deflection) from 'the fl oor' (the floor), so a join is made only when it produces a word the
+    PDF's own text layer contains: 'XfiY', else 'X fiY', else 'Xfi Y'. Anything else is left alone.
+    """
+    if not vocab or not re.search(r"\b(?:ffi|ffl|ff|fi|fl) [a-z]", text):
+        return text
+
+    def fix(m: "re.Match[str]") -> str:
+        x, lig, y = m.group(1) or "", m.group(2), m.group(3)
+        if x and (x + lig + y).lower() in vocab:
+            return x + lig + y
+        if (lig + y).lower() in vocab:
+            return (x + " " if x else "") + lig + y
+        if x and (x + lig).lower() in vocab:
+            return x + lig + " " + y
+        return m.group(0)
+
+    return _SPLIT_LIGATURE_RE.sub(fix, text)
+
+
+def _repair_table_ligatures(table: Any, vocab: set[str]) -> None:
+    """Walk a Docling table dict and repair every string in it (cell text, captions)."""
+    def walk(node: Any) -> Any:
+        if isinstance(node, str):
+            return repair_split_ligatures(node, vocab)
+        if isinstance(node, list):
+            for i, v in enumerate(node):
+                node[i] = walk(v)
+            return node
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if not k.startswith("_"):
+                    node[k] = walk(v)
+            return node
+        return node
+    walk(table)
 
 
 def own_chunks(chunks_dir: Path, stem: str) -> list[Path]:
@@ -1157,6 +1242,22 @@ def _load_convert_meta_file(doc_dir: Path) -> dict[str, Any]:
     return {}
 
 
+_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+# ASCE's math font maps its operators to Latin-1 letters in the text layer: "QG = 1.1ðQD þ QL þ QS Þ"
+# is Q_G = 1.1(Q_D + Q_L + Q_S). Thorn and eth have no other use in an English standard, so the
+# translation is unconditional. The fi/fl ligature glyphs are expanded here as well.
+_MATH_FONT_GLYPHS = str.maketrans({"þ": "+", "ð": "(", "Þ": ")", "\ufb00": "ff", "\ufb01": "fi",
+                                   "\ufb02": "fl", "\ufb03": "ffi", "\ufb04": "ffl"})
+
+
+def strip_control_chars(text: str) -> str:
+    """Docling maps a few PDF glyphs (list bullets, mostly) to C0 control characters: BEL in
+    'E3. \x07 FLEXURAL BUCKLING', ETX in 'ORDINARY MOMENT FRAMES (OMF)\x03'. AISC 360-22 alone
+    carried 1,028 of them into the searchable markdown, where they surface as ^G in what the
+    design agents read and in section titles. Tabs and newlines stay."""
+    return _CTRL_RE.sub("", text or "").translate(_MATH_FONT_GLYPHS)
+
+
 def load_chunks(doc_dir: Path, stem: Optional[str] = None) -> LoadedDoc:
     meta = load_convert_meta(doc_dir, stem)
     stem = stem or meta.get("stem") or doc_dir.name
@@ -1166,6 +1267,14 @@ def load_chunks(doc_dir: Path, stem: Optional[str] = None) -> LoadedDoc:
     if not chunks_dir.is_dir():
         raise FileNotFoundError(f"No structured/chunks in {doc_dir}")
     chunk_paths = own_chunks(chunks_dir, stem)
+    if not meta.get("pdf_pages_total"):
+        # convert_meta.json is shared in the hub's flat workspace and describes only the conversion
+        # that ran last; every other document's record was published with pdf_pages_total=None.
+        # The chunk files are named for the page window they hold, and the last window ends on
+        # the PDF's last page.
+        ends = [int(m.group(1)) for cp in chunk_paths if (m := re.search(r"_p\d+_(\d+)\.json$", cp.name))]
+        if ends:
+            meta["pdf_pages_total"] = max(ends)
     texts: list[TextItem] = []
     formulas: list[TextItem] = []
     tables_raw: list[dict[str, Any]] = []
@@ -1177,8 +1286,8 @@ def load_chunks(doc_dir: Path, stem: Optional[str] = None) -> LoadedDoc:
                 self_ref=t.get("self_ref") or "",
                 label=t.get("label") or "",
                 layer=t.get("content_layer") or "",
-                text=t.get("text") or "",
-                orig=t.get("orig") or "",
+                text=strip_control_chars(t.get("text") or ""),
+                orig=strip_control_chars(t.get("orig") or ""),
                 pages=page_nos(t),
                 bbox=first_bbox(t),
             )
@@ -1396,12 +1505,16 @@ def detect_commentary(
     # S100 p3 "Commentary on the Specification" must not pin the cover.
     if profile.name in ("aisc", "aisc_358", "aisc_341", "aisi_s100"):
         family_cutoff = max(200, n_pages // 3)
+    elif profile.name == "aisc_342":
+        family_cutoff = max(60, n_pages // 3)        # 276 pages, commentary cover on pdf 167
     elif profile.name == "asce7":
         family_cutoff = max(400, n_pages // 2)
+    elif profile.name == "asce41":
+        family_cutoff = max(300, n_pages // 2)       # 615 pages, CHAPTER C1 on pdf 400
     else:
         family_cutoff = 1
     aisc_cutoff = family_cutoff
-    cutoff_profiles = ("aisc", "aisc_358", "aisc_341", "asce7", "aisi_s100")
+    cutoff_profiles = ("aisc", "aisc_358", "aisc_341", "aisc_342", "asce7", "asce41", "aisi_s100")
 
     # Fallback: first page whose furniture/body mentions the cover regex
     if cover_pdf is None or (profile.name in cutoff_profiles and cover_pdf < aisc_cutoff):
@@ -1438,9 +1551,9 @@ def detect_commentary(
 
     body_pdf: Optional[int] = None
     if cover_pdf is not None:
-        if profile.name in ("aisc", "aisc_358", "aisc_341", "asce7"):
-            # AISC 360 labels stay 16.1-xxx; 358=9.2-xxx; 341=9.1-xxx; ASCE
-            # commentary continues arabic so do not hunt for a restarted "1".
+        if profile.name in ("aisc", "aisc_358", "aisc_341", "aisc_342", "asce7", "asce41"):
+            # AISC 360 labels stay 16.1-xxx; 358=9.2-xxx; 341=9.1-xxx; 342 and ASCE
+            # commentary continue arabic so do not hunt for a restarted "1".
             body_pdf = cover_pdf
             after = [p for p in body_heading_pages if p >= cover_pdf]
             if after:
@@ -1527,7 +1640,7 @@ def pdf_text_pages(pdf_path: Path) -> list[str]:
     Empty when neither can run -- the census is then skipped with a warning, not a traceback."""
     from pdftext import pdf_pages_text
 
-    return pdf_pages_text(pdf_path)
+    return [strip_control_chars(t) for t in pdf_pages_text(pdf_path)]
 
 
 def census_pdf_eq_ids(
@@ -1560,6 +1673,69 @@ def census_pdf_eq_ids(
 # ---------------------------------------------------------------------------
 # Equation ID recovery from adjacent text
 # ---------------------------------------------------------------------------
+
+
+_EMBEDDED_ID_RE = re.compile(r"\(((?:C-)?[A-Z]\d+(?:\.\d+)*-\d+[a-z]?)\)")
+
+
+def printed_id_in_latex(latex: Optional[str]) -> Optional[str]:
+    """The equation id Docling's formula enrichment kept inside the LaTeX, letter-spaced:
+    '( F 2 - 5 )', '( J 1 0 \\cdot 9 )', '( E 3 ^ { - 4 } )', '( D 2 { - 1 } )'."""
+    if not latex:
+        return None
+    t = re.sub(r"\s+", "", latex)
+    t = t.replace("\\cdot", "-").replace("^{-", "-").replace("{-}", "-").replace("{-", "-").replace("}", "")
+    m = _EMBEDDED_ID_RE.search(t)
+    return m.group(1) if m else None
+
+
+def realign_latex_by_printed_id(equations: list[dict[str, Any]]) -> int:
+    """Give each LaTeX block to the equation whose id is printed inside it.
+
+    Docling's formula enrichment returns its LaTeX for a batch of formula items shifted by one
+    whenever an unnumbered formula (a User Note) sits in the run: in AISC 360-22 the row for
+    F2-6 (Lr) carried Lp's LaTeX with '( F 2 - 5 )' inside it, F2-7 carried F2-6's, F2-8a
+    F2-7's, and G2-1 held the phi/Omega line while its own Vn = 0.6FyAwCv1 sat elsewhere. The
+    `orig` text of each row was right throughout -- only the LaTeX had moved. Where the LaTeX
+    names its own id, that wins: the block moves to that row, and a row whose block moved away
+    keeps its orig and gets its own block back if any row holds it. A block that named no id and
+    was displaced is kept as an unidentified formula so nothing is lost."""
+    by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in equations:
+        if r.get("eq_id"):
+            by_key.setdefault((r.get("part") or "standard", r["eq_id"]), r)
+    snapshot = [(r, r.get("latex"), printed_id_in_latex(r.get("latex"))) for r in equations]
+    claimed: dict[int, tuple[dict[str, Any], str]] = {}       # id(holder) -> (target, printed id)
+    for r, latex, printed in snapshot:
+        if not printed or printed == r.get("eq_id"):
+            continue
+        target = by_key.get((r.get("part") or "standard", printed))
+        if target is not None and target is not r:
+            claimed[id(r)] = (target, printed)
+    if not claimed:
+        return 0
+    incoming: dict[int, tuple[str, str]] = {id(t): (lx, printed) for h, (t, printed) in claimed.items()
+                                            for r, lx, _ in snapshot if id(r) == h and lx}
+    orphans: list[dict[str, Any]] = []
+    for r, latex, printed in snapshot:
+        gets = incoming.get(id(r))
+        gave = id(r) in claimed
+        if gets:
+            if latex and not gave and printed_id_in_latex(latex) is None:
+                # this row's own block named no id and is being replaced: keep it, unidentified
+                orphans.append({**r, "eq_id": None, "eq_id_display": None, "orig": None,
+                                "source": "formula_unidentified", "index": None,
+                                "issues": list(r.get("issues") or []) + [
+                                    f"displaced by the block printed with ({gets[1]}); id unknown"]})
+            r["latex"] = gets[0]
+            r["issues"] = list(r.get("issues") or []) + [f"latex re-attached: ({gets[1]}) is printed inside it"]
+            r["source"] = "formula+adjacent" if r.get("eq_id") else r.get("source")
+        elif gave:
+            r["latex"] = None
+            r["issues"] = list(r.get("issues") or []) + [
+                f"latex belonged to ({claimed[id(r)][1]}), which is printed inside it; moved there"]
+    equations.extend(orphans)
+    return len(claimed)
 
 
 def recover_equation_ids(
@@ -1719,7 +1895,7 @@ def synthesize_aisc_subsections(
     ('D4. H-Piles' on the chapter opener) must not remain the live parent
     through a later D1 body — that is what produced D4.2a for D1.2a.
     """
-    if not is_aisc_doc(loaded.stem):
+    if not (is_aisc_doc(loaded.stem) or is_aisc_342_doc(loaded.stem)):
         return sections
     existing = {(s["section_id"], s["part"]) for s in sections}
     current_parent: dict[str, Optional[str]] = {"standard": None, "commentary": None}
@@ -1791,13 +1967,41 @@ def synthesize_aisc_subsections(
     return sections
 
 
+_HEADING_FUNCTION_WORDS = {"a", "an", "and", "as", "at", "by", "for", "from", "in", "of", "on", "or",
+                           "the", "to", "with", "under", "per", "vs", "versus", "into", "than"}
+
+
+def split_run_in_heading(text: str) -> str:
+    """'Building Configuration The as-built building configuration shall ...' -> 'Building Configuration'.
+
+    ASCE 41's headings are Title Case; the paragraph Docling ran into them starts with a
+    capitalised word and continues in lower case. The heading ends before the sentence's first
+    word, which is the capitalised word immediately preceding the first lower-case word that is
+    not a function word. A heading with no such word is returned whole."""
+    words = text.split()
+    for k, w in enumerate(words):
+        core = w.strip("(),.;:")
+        if core and core[0].islower() and core.lower() not in _HEADING_FUNCTION_WORDS:
+            cut = k - 1 if k >= 1 and words[k - 1][:1].isupper() else k
+            head = words[:cut]
+            while head and head[-1].strip("(),.;:").lower() in _HEADING_FUNCTION_WORDS:
+                head.pop()
+            return " ".join(head) if head else text
+    return text
+
+
 def synthesize_asce_subsections(
     loaded: LoadedDoc,
     page_map: dict[int, dict[str, Any]],
     sections: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """ASCE 7 often emits 12.4.3.2 / C1.1 as list_item or paragraph, not section_header."""
-    if not is_asce7_doc(loaded.stem):
+    """ASCE 7 often emits 12.4.3.2 / C1.1 as list_item or paragraph, not section_header.
+
+    ASCE 41-23 does the same one level deeper: Docling runs "7.5.2.1.1 Deformation-Controlled
+    Actions for Linear Static Procedure ..." straight into the paragraph that follows it, so
+    Chapter 7 came out with 25 section ids (7.2, 7.2.4, 7.2.15 ...) for a chapter with well over
+    a hundred numbered headings."""
+    if not (is_asce7_doc(loaded.stem) or is_asce41_doc(loaded.stem)):
         return sections
     existing = {(s["section_id"], s["part"]) for s in sections}
     for t in loaded.texts:
@@ -1819,6 +2023,8 @@ def synthesize_asce_subsections(
         sid, title = parsed
         if not re.match(r"^C?\d+", sid):
             continue
+        if t.label not in ("section_header", "title"):
+            title = split_run_in_heading(title)      # the heading ran into its paragraph
         if len(title) > 200:
             title = title[:200].rstrip()
         pno = t.pages[0] if t.pages else None
@@ -2013,11 +2219,36 @@ TABLE_ID_LINE_RE = re.compile(
     r"\bTABLE\s+("
     r"(?:C-)?"  # C-N5.6-2
     r"(?:[A-Z]-)?"  # A-3.1
-    r"(?:[A-Z]?\d+(?:\.\d+)*[A-Za-z]?)"  # A3.2 / 26.11 / C26.5 / B4.1a
+    r"(?:[A-Z]?\d+(?:\s?\.\d+)*[A-Za-z]?)"  # A3.2 / 26.11 / C26.5 / B4.1a / "A-1.7 .1" (AISC 341 App. 1)
     r"(?:-\d+[A-Za-z]?)?"  # -1 / -3 / -1A  (ASCE 26.11-1, C26.5-3)
     r")\b",
     re.I,
 )
+
+
+def is_front_matter_label(label: Any) -> bool:
+    """Roman-numbered pages: TOC, symbols, glossary. AISC prints them 9.1-xxiv, ASCE/AISC 342 plain
+    xxiv. The tables Docling finds there are the TOC and the symbol lists, whose cells cite
+    'Table D1.1' for a symbol's use -- an id that must not be attached to them, or an exact
+    lookup of Table D1.1 can answer with the symbols list."""
+    tail = str(label or "").strip().split("-")[-1]
+    return bool(tail) and bool(ROMAN_RE.fullmatch(tail))
+
+
+def local_artifact(doc_dir: Path, recorded: Optional[str], subdir: str = "tables") -> Optional[Path]:
+    """A file the converter recorded by absolute path, found again by name under the workspace.
+
+    convert_pdf writes absolute paths (C:\\Users\\...\\grokbot\\tables\\A341_22_p071_075_001_p072.md) into
+    <stem>_tables_index.json. Read anywhere else -- a restored backup, another PC, this VM -- the
+    path is dead, the table's own markdown is never scanned for its 'TABLE A3.2' caption, and the
+    id recovery silently drops from 23 identified tables to 4 (AISC 341-22)."""
+    if not recorded:
+        return None
+    q = Path(recorded)
+    if q.is_file():
+        return q
+    cand = doc_dir / subdir / Path(str(recorded).replace("\\", "/")).name
+    return cand if cand.is_file() else None
 
 
 def recover_table_id(caption: str, nearby: str) -> Optional[str]:
@@ -2101,19 +2332,21 @@ def build_tables(
         pm = page_map.get(pno or -1) or {}
         caption = rec.get("caption") or ""
         nearby = " ".join(captions_by_page.get(pno or -1) or [])
-        md_path = rec.get("md")
+        md_path = local_artifact(loaded.doc_dir, rec.get("md"))
         md_text = ""
-        if md_path and Path(md_path).is_file():
-            md_text = Path(md_path).read_text(encoding="utf-8")
+        if md_path:
+            md_text = md_path.read_text(encoding="utf-8")
         # Two-line "TABLE A3.2 / Ry and Rt Values" often lives in the grid,
         # not in Docling's caption field — scan markdown too.
-        tid = recover_table_id(caption, nearby + "\n" + md_text[:2000])
-        title = collapse_ws(caption) or table_title_from_blob(md_text or nearby, tid)
+        front = is_front_matter_label(pm.get("printed_label"))
+        tid = None if front else recover_table_id(caption, nearby + "\n" + md_text[:2000])
+        title = None if front else (collapse_ws(caption) or table_title_from_blob(md_text or nearby, tid))
         out.append(
             {
                 "doc": loaded.stem,
                 "table_id": tid,
                 "title": title or None,
+                **({"front_matter": True} if front else {}),
                 "section": section_at_page.get(pno or -1),
                 "part": pm.get("part") or "standard",
                 "pdf_pages": pages,
@@ -2135,10 +2368,10 @@ def build_tables(
         extra_i += 1
         pno = rec.get("pdf_page")
         pm = page_map.get(pno or -1) or {}
-        md_path = rec.get("md")
+        md_path = local_artifact(loaded.doc_dir, rec.get("md"))
         md_text = ""
-        if md_path and Path(md_path).is_file():
-            md_text = Path(md_path).read_text(encoding="utf-8")
+        if md_path:
+            md_text = md_path.read_text(encoding="utf-8")
         elif rec.get("markdown"):
             md_text = rec.get("markdown") or ""
         tid = rec.get("table_id") or recover_table_id(
@@ -2657,8 +2890,11 @@ def export_body_markdown(
                 except Exception as exc:
                     errors.append(f"page {pno}: {exc}")
                     text = ""
-            text = (text or "").rstrip() + "\n"
-            if is_asce7_doc(loaded.stem):
+            text = strip_control_chars(text or "").rstrip() + "\n"
+            if loaded.text_fixup is not None:
+                text = loaded.text_fixup(text)
+            if is_asce7_doc(loaded.stem) or is_asce41_doc(loaded.stem):
+                # ascelibrary.org stamps every page with the licensee's name and a copyright line
                 text = strip_asce_search_furniture(text).rstrip() + "\n"
             if is_aisc_358_doc(loaded.stem):
                 text = strip_aisc_358_search_furniture(text).rstrip() + "\n"
@@ -2709,7 +2945,7 @@ def export_body_markdown(
         elif is_aisc_doc(loaded.stem):
             for rx in AISC_RUNNING_TITLE_RES:
                 running_search += len(rx.findall(blob))
-        if is_asce7_doc(loaded.stem):
+        if is_asce7_doc(loaded.stem) or is_asce41_doc(loaded.stem):
             for rx in ASCE_RUNNING_TITLE_RES + ASCE_WATERMARK_RES:
                 running_search += len(rx.findall(blob))
         if is_aisi_s100_doc(loaded.stem):
@@ -2762,6 +2998,61 @@ def write_blocks(
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
             n += 1
     return out_path
+
+
+def converter_indexes_dir(doc_dir: Path, indexes_dir: Path) -> Path:
+    """Where this document's records go: never the folder build_index writes its own output to.
+
+    `<root>/indexes` is build_index's OUTPUT. The hub's Re-process tab used to point the converter
+    at it, so the converter's records and the builder's re-keyed copies of them shared four
+    filenames, and every rebuild ingested its own previous output. The converter's set lives in
+    `<root>/indexes/converted`; a caller aiming at `<root>/indexes` is redirected there and told.
+    """
+    try:
+        if indexes_dir.resolve() == (doc_dir / "indexes").resolve():
+            target = doc_dir / "indexes" / "converted"
+            LOG.warning("--indexes-dir %s is build_index's output folder; the converter's records go to %s "
+                        "instead, so a rebuild reads the conversion and not its own previous output",
+                        indexes_dir, target)
+            return target
+    except OSError:
+        pass
+    return indexes_dir
+
+
+def document_names(stem: str, *extra: Optional[str]) -> set[str]:
+    """Every name a converted document's records can carry inside a shared index set.
+
+    postprocess writes its records under the filename stem ("A358_22"). build_index reads that
+    same flat set, re-keys every record under the canonical document id ("AISC_358_22", keeping
+    the stem in ``converted_stem``) and writes its unified output back over the same files. A
+    purge that compares against the stem alone therefore misses every record the last build
+    touched, so each re-process appended a fresh set beside the stale one: AISC 358-22 ended up
+    with 1905 records whose text came from AISC 341/360 and every re-processed document doubled.
+    """
+    names = {stem, *extra}
+    try:
+        from retrieval import resolve_doc  # scripts/ is beside this file
+        canon = resolve_doc(stem)
+        if canon:
+            names.add(canon)
+    except Exception:  # retrieval not importable (one-document packaging): stem-only, as before
+        pass
+    return {n for n in names if n}
+
+
+def purge_document(
+    existing: list[dict[str, Any]], stem: str, key: str = "doc", *extra: Optional[str]
+) -> list[dict[str, Any]]:
+    """Drop every record that belongs to ``stem`` under any of its names; keep the rest."""
+    names = document_names(stem, *extra)
+    return [
+        r
+        for r in existing
+        if r.get(key) not in names
+        and r.get("doc") not in names
+        and r.get("converted_stem") not in names
+    ]
 
 
 def write_indexes(
@@ -2858,16 +3149,20 @@ def write_indexes(
         )
         edition = "2022"
         standard = "ANSI/AISC 342-22"
-        page_scheme = "not verified for this document -- read the printed labels before citing them"
-        unvalidated = "page label scheme and commentary boundary not checked against the PDF"
+        page_scheme = (
+            "printed labels plain arabic (roman front matter; pdf 33 = printed 1) in the provisions, "
+            "continuing through the commentary (cover pdf 167 = printed 135, qualified C-135); "
+            "PDF page is separate. Not 16.1-xxx / 9.1-xxx / 9.2-xxx."
+        )
     elif is_asce41_doc(loaded.stem):
         title = title or "ASCE/SEI 41-23 Seismic Evaluation and Retrofit of Existing Buildings"
         edition = "2023"
         standard = "ASCE/SEI 41-23"
-        page_scheme = "not verified for this document -- read the printed labels before citing them"
-        unvalidated = ("page label scheme and commentary boundary not checked against the PDF; "
-                       "ASCE 41 may carry its commentary inline as C-prefixed sections rather than "
-                       "as a separate half")
+        page_scheme = (
+            "printed labels plain arabic (roman front matter; pdf 48 = printed 1) continuing "
+            "through the commentary, which is a separate half: CHAPTER C1 on pdf 400 (printed 353) "
+            "after the provisions (chapters 1-18) and appendices A-C; PDF page is separate."
+        )
     elif "s400" in re.sub(r"[^a-z0-9]+", "", loaded.stem.lower()):
         title = title or "AISI S400-20 North American Standard for Seismic Design of Cold-Formed Steel Structural Systems"
         edition = "2020"
@@ -2939,7 +3234,7 @@ def write_indexes(
                     existing = []
             except Exception:
                 existing = []
-        kept = [r for r in existing if r.get(key) != loaded.stem and r.get("doc") != loaded.stem]
+        kept = purge_document(existing, loaded.stem, key, doc_rec.get("id"))
         path.write_text(
             json.dumps(kept + records, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
@@ -3237,7 +3532,7 @@ def run_husk_backfill_existing(
                 existing = []
         except Exception:
             existing = []
-    kept = [r for r in existing if r.get("doc") != stem]
+    kept = purge_document(existing, stem)
     lite_eq.write_text(
         json.dumps(kept + equations, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
@@ -3270,7 +3565,22 @@ def run(
     loaded = load_chunks(doc_dir, stem)
     if pdf:
         loaded.source_pdf = pdf
+    split = sum(t.text.count(" fi ") + t.text.count(" fl ") for t in loaded.texts)
+    if split >= 20:
+        if loaded.source_pdf and loaded.source_pdf.is_file():
+            vocab = pdf_vocabulary(pdf_text_pages(loaded.source_pdf))
+            src = f"the PDF's text layer ({len(vocab)} words)"
+        else:
+            vocab = pdf_vocabulary(t.text for t in loaded.texts)
+            src = "the document's own unsplit words (no PDF given; coverage is partial)"
+        for t in loaded.texts:
+            t.text = repair_split_ligatures(t.text, vocab)
+        for tb in loaded.tables_raw:
+            _repair_table_ligatures(tb, vocab)
+        loaded.text_fixup = lambda text, _v=vocab: repair_split_ligatures(text, _v)
+        LOG.info("split fi/fl ligatures: %s occurrences in the Docling text; re-joined against %s", split, src)
     profile = profile_for_stem(loaded.stem, profile_name)
+    EXTRA_EQ_PARENS_RES[:] = [ASCE41_EQ_PARENS_RE] if is_asce41_doc(loaded.stem) else []
     LOG.info("Post-processing %s profile=%s chunks=%s", loaded.stem, profile.name, len(loaded.chunk_paths))
 
     furn = furniture_by_page(loaded)
@@ -3293,6 +3603,9 @@ def run(
         LOG.warning("Source PDF not found; equation census skipped")
 
     equations = recover_equation_ids(loaded, page_map, section_at, pdf_census)
+    moved = realign_latex_by_printed_id(equations)
+    if moved:
+        LOG.info("equation LaTeX re-attached by the id printed inside it: %s blocks", moved)
     tables = build_tables(loaded, page_map, section_at)
     md_stats = export_body_markdown(loaded, page_map)
     search_pages = parse_search_md_pages(Path(md_stats.get("search_md") or ""))
@@ -3323,6 +3636,7 @@ def run(
             indexes_dir = doc_dir.parent.parent.parent / "indexes-lite"
         except Exception:
             indexes_dir = Path("/workspace/engineering_rag/indexes-lite")
+    indexes_dir = converter_indexes_dir(doc_dir, indexes_dir)
     index_paths = write_indexes(
         loaded, page_map, boundary, sections, equations, tables, indexes_dir, md_stats
     )
