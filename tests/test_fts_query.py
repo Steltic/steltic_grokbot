@@ -135,3 +135,53 @@ def test_an_id_without_digits_is_not_an_id():
     from retrieval import fts_ids
     # 'RBS', 'SCBF', 'WUF-W' are abbreviations, not clause numbers
     assert fts_ids("RBS SCBF WUF-W BFP connections") == []
+
+
+# --- fault 3: English "and / or / not / near" are not FTS5 operators ------------------------------
+#
+# Live on 2026-09-18 after the two faults above were fixed. The hand-written-expression check
+# upper-cased the question before looking for " AND ", " OR ", " NOT ", " NEAR ", so "steel systems
+# not specifically detailed R=3 seismic requirements" went to FTS5 verbatim -- `not` as the NOT
+# operator, `R=3` a syntax error -- with a one-rung plan and no loosening. The ladder reported
+# NOT FOUND, and "compression and flexure", "bolted or welded" did the same on every run.
+
+ENGLISH = (
+    "steel systems not specifically detailed R=3 seismic requirements",
+    "compression and flexure interaction H1",
+    "bolted or welded connections J2",
+    "braces near the gusset",
+)
+
+
+def test_english_and_or_not_near_do_not_make_a_handwritten_expression():
+    from retrieval import is_handwritten_fts
+    for q in ENGLISH:
+        assert not is_handwritten_fts(q), q
+    assert is_handwritten_fts('F2 AND (flexural OR buckling)')
+    assert is_handwritten_fts('flexural NOT torsional')
+    assert is_handwritten_fts('NEAR(flexural buckling, 5)')
+
+
+def test_an_english_question_gets_the_whole_ladder():
+    for q in ENGLISH:
+        plan = fts_strategies(q)
+        names = [n for n, _ in plan]
+        assert "verbatim" not in names, (q, names)
+        assert names[0] == "strict" and names[-1] == "any-term", (q, names)
+
+
+def test_every_rung_of_an_english_question_is_legal_fts():
+    con = _fts()
+    for q in ENGLISH:
+        for _, expr in fts_strategies(q):
+            con.execute("SELECT count(*) FROM spec_fts WHERE spec_fts MATCH ?", (expr,))   # must not raise
+
+
+def test_r_equals_3_is_a_phrase_not_an_id():
+    from retrieval import _fts_token, fts_ids
+    assert _fts_token("R=3") == '"R 3"'
+    assert fts_ids("systems not specifically detailed R=3") == []
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE VIRTUAL TABLE t USING fts5(body)")
+    con.execute("INSERT INTO t VALUES ('the seismic response modification coefficient, R = 3, is permitted')")
+    assert con.execute("SELECT count(*) FROM t WHERE t MATCH ?", ('"R 3"',)).fetchone()[0] == 1

@@ -219,6 +219,19 @@ _FTS_STOP = {"a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in
 _GREEK = "ΩωφΦλΛαΑβγδεΔπΠσΣμΜ°"
 
 
+# FTS5's operators are upper-case words: AND, OR, NOT, NEAR. The English words are barewords to
+# FTS5 and ordinary vocabulary to an engineer -- "compression and flexure", "bolted or welded",
+# "systems not specifically detailed". Upper-casing the question before looking for them turned
+# most natural questions into "hand-written FTS5", sent verbatim with no fallback: `not` became
+# the NOT operator, `R=3` a syntax error, and the ladder reported NOT FOUND after one rung.
+_FTS_HANDWRITTEN = re.compile(r"(?:^|[\s(])(?:AND|OR|NOT)(?:[\s)]|$)|\bNEAR\(")
+
+
+def is_handwritten_fts(query: str) -> bool:
+    """True only for an expression the caller wrote in FTS5 syntax: upper-case operators."""
+    return bool(_FTS_HANDWRITTEN.search(query))
+
+
 def _fts_token(tok: str) -> str:
     """One token as FTS5 can safely parse it: bare when it is plain, a quoted phrase otherwise.
 
@@ -226,12 +239,13 @@ def _fts_token(tok: str) -> str:
     than two independent AND-ed terms."""
     if tok.startswith('"') and tok.endswith('"') and len(tok) >= 2:
         return tok
-    cleaned = re.sub(rf"[^\w.\-\u2013\u2014/{_GREEK}]", "", tok, flags=re.U).strip(".-\u2013\u2014/")
+    cleaned = re.sub(rf"[^\w.\-\u2013\u2014/={_GREEK}]", "", tok, flags=re.U).strip(".-\u2013\u2014/=")
     if not cleaned:
         return ""
     if _FTS_BARE.match(cleaned):
         return cleaned
-    inner = re.sub(r"\s+", " ", re.sub(r"[-\u2013\u2014/.]+", " ", cleaned)).strip()
+    # "R=3" is the phrase R 3 (FTS5 tokenises "R = 3" the same way), not the id-looking bareword R3
+    inner = re.sub(r"\s+", " ", re.sub(r"[-\u2013\u2014/.=]+", " ", cleaned)).strip()
     return '"' + inner + '"' if inner else ""
 
 
@@ -264,7 +278,10 @@ def fts_ids(query: str) -> list[str]:
     happen to contain every word, and the clause itself never appears."""
     out: list[str] = []
     for m in re.finditer(r'"[^"]+"|\S+', nfkc(query).strip()):
-        bare = re.sub(r"[^\w.\-]", "", m.group(0).strip('"')).strip(".-")
+        raw = m.group(0).strip('"')
+        if "=" in raw:
+            continue                # R=3 is a value, not a clause id
+        bare = re.sub(r"[^\w.\-]", "", raw).strip(".-")
         if bare and _FTS_HASDIGIT.search(bare) and _FTS_ID.match(bare) and bare.upper() not in out:
             out.append(bare.upper())
     return out
@@ -275,7 +292,7 @@ def fts_escape(query: str) -> str:
     q = nfkc(query).strip()
     if not q:
         return q
-    if any(tok in q.upper() for tok in (" AND ", " OR ", " NOT ", " NEAR ")):
+    if is_handwritten_fts(q):
         return q            # the caller wrote FTS5 by hand; leave it alone
     ids, words = _fts_parts(q)
     parts = ids + words
@@ -290,7 +307,7 @@ def fts_strategies(query: str) -> list[tuple[str, str]]:
     q = nfkc(query).strip()
     if not q:
         return []
-    if any(tok in q.upper() for tok in (" AND ", " OR ", " NOT ", " NEAR ")):
+    if is_handwritten_fts(q):
         return [("verbatim", q)]
     ids, words = _fts_parts(q)
     out: list[tuple[str, str]] = []
