@@ -180,7 +180,13 @@ def audit(root: Path, smoke: bool = True, pdf_dir: Optional[Path] = None) -> dic
         if foreign:
             who = collections.Counter(str(r["chunk"]).split("_p")[0] for r in foreign)
             F.add("FAIL", doc, "foreign-chunk", f"{len(foreign)} section records name another document's chunk file: {dict(who)}")
-        key = lambda r: (r.get("section_id"), r.get("title"), r.get("pdf_page"), r.get("chunk"), r.get("part"))
+        # `self_ref` is part of what makes a record distinct. AISI S100 and the AISC standards open
+        # each chapter with a list of its own sections, so "A1 Scope, Applicability, and Definitions"
+        # legitimately appears twice on the same page, from the same chunk: once as the contents
+        # entry (no children) and once as the body heading (children A1.1..A1.4). Without self_ref
+        # the audit called 22 such pairs a re-ingestion and cried FAIL on a clean document.
+        key = lambda r: (r.get("section_id"), r.get("title"), r.get("pdf_page"), r.get("chunk"),
+                         r.get("part"), r.get("self_ref"))
         dup = sum(v - 1 for v in collections.Counter(map(key, S)).values())
         if dup:
             F.add("FAIL", doc, "duplicate-sections", f"{dup} exact duplicate section records (re-process appended instead of replacing)")
@@ -253,9 +259,21 @@ def audit(root: Path, smoke: bool = True, pdf_dir: Optional[Path] = None) -> dic
         row["eq_ids"] = len(uniq)
         if E and len(with_id) / len(E) < 0.6:
             F.add("WARN", doc, "unidentified-equations", f"{len(E) - len(with_id)} of {len(E)} formula rows have no equation id -- the id grammar may not know this document's numbering")
-        dis = [(r["eq_id"], printed_id_in_latex(r.get("latex"))) for r in with_id if printed_id_in_latex(r.get("latex")) and printed_id_in_latex(r.get("latex")) != r["eq_id"]]
+        # A row is serving ANOTHER equation's LaTeX only if that other equation exists. The id token
+        # inside a LaTeX block is OCR of a parenthesised label, and it loses separators: S100's
+        # C-C2.2.1-9 renders as "C-C2.21-9", S240's C-B5.4.2.4-2 as "C-B5.4.2-2". Neither names a
+        # real equation -- both are the row's own id, mangled -- and reporting them as FAIL taught
+        # the reader to ignore the audit. So: the printed id must survive separator-stripping as a
+        # different id AND name an equation this document actually has. The rest is an INFO.
+        squash = lambda s: re.sub(r"[^0-9A-Za-z]", "", str(s or "")).upper()
+        cand = [(r["eq_id"], printed_id_in_latex(r.get("latex"))) for r in with_id
+                if printed_id_in_latex(r.get("latex")) and printed_id_in_latex(r.get("latex")) != r["eq_id"]]
+        dis = [(a, b) for a, b in cand if squash(a) != squash(b) and b in uniq]
+        soft = [(a, b) for a, b in cand if (a, b) not in dis]
         if dis:
             F.add("FAIL", doc, "latex-wrong-equation", f"{len(dis)} equation rows carry LaTeX printed with another id: {dis[:4]}")
+        if soft:
+            F.add("INFO", doc, "latex-id-token-mangled", f"{len(soft)} equation rows carry a printed id token that names no other equation (OCR dropped a separator): {soft[:3]}")
         norel = sum(1 for r in with_id if r.get("latex") and not RELATION_RE.search(r["latex"]))
         if with_id and norel / len(with_id) > 0.05:
             F.add("INFO", doc, "latex-no-relation", f"{norel} of {len(with_id)} identified equations have LaTeX without =/<=/>= (Docling dropped it; `orig` has it)")

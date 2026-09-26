@@ -892,13 +892,49 @@ class Corpus:
                 if pno in seen_p:
                     continue
                 seen_p.add(pno)
+                # A continued page gets everything the first page gets. It used to get ONE of the
+                # three -- the per-table markdown, else the excerpt, else the page -- and an excerpt
+                # is the head of the table, so the last rows of Table C5.5 (continued), the RBS row
+                # among them, were not in the answer to `exact_table C5.5`.
                 if t.get("md") and Path(t["md"]).is_file():
                     blobs.append(Path(t["md"]).read_text(encoding="utf-8"))
-                elif t.get("markdown_excerpt"):
+                if t.get("markdown_excerpt"):
                     blobs.append(t["markdown_excerpt"])
-                elif doc and pno:
+                if doc and pno:
                     blobs.append(self.page_text(doc, pno))
         return nfkc("\n\n".join(blobs))
+
+    def table_footnotes(self, recs: list) -> list:
+        """The equations printed as a table's footnotes: same document, same pdf page(s), no equation id.
+
+        AISC 342 Table C5.5 gives the FR-connection rows' `a` as "X1 <= 0.07" / "X2 <= 0.07" and defines
+        X1 and X2 in footnotes [d] and [e] -- equations with no number, so `exact_equation` cannot reach
+        them and keyword search skips equation records without an id. The markdown page text carries
+        them, but the converter truncated X2 there at "(L/d)^{0."; the equation index has the whole
+        expression. A table answered without its footnotes is a table the reader cannot use, so they
+        travel with it. Alignment fragments ("& ...") are the converter's leftovers and are skipped."""
+        pages: set = set()
+        doc = None
+        for t in recs:
+            doc = doc or t.get("doc")
+            for pg in (t.get("pdf_pages") or ([t.get("pdf_page")] if t.get("pdf_page") else [])):
+                pages.add(pg)
+        if not doc or not pages:
+            return []
+        out = []
+        seen: set = set()
+        for e in self.equations:
+            if e.get("eq_id") or e.get("doc") != doc or e.get("pdf_page") not in pages:
+                continue
+            lat = str(e.get("latex") or "").strip()
+            if not lat or lat.startswith("&") or lat.startswith("\\\\"):
+                continue
+            key = lat.replace(" ", "")
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(e)
+        return out
 
     def equation_text(self, rec: dict[str, Any]) -> str:
         parts = [
@@ -1345,7 +1381,15 @@ class Corpus:
         for _, group in grouped.items():
             primary = group[0]
             text = self.table_text(primary)
-            hits.append(self._hit(kind="table", rec=primary, text=text))
+            notes = self.table_footnotes(group)
+            if notes:
+                text += "\n\nFOOTNOTE EQUATIONS printed with this table (pdf p. %s; complete, from the equation index):\n" % (
+                    ", ".join(str(e.get("pdf_page")) for e in notes)) + "\n".join(
+                    "  %s" % (e.get("latex") or "").strip() for e in notes)
+            h = self._hit(kind="table", rec=primary, text=text)
+            if notes:
+                h["footnote_equations"] = [{"pdf_page": e.get("pdf_page"), "latex": e.get("latex")} for e in notes]
+            hits.append(h)
             if len(hits) >= limit:
                 break
         return {"found": True, "query": query, "type": "exact_table", "hits": hits}

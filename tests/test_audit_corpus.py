@@ -60,9 +60,19 @@ def test_commentary_served_as_standard_is_a_fail(tmp_path):
 
 
 def test_latex_printed_with_another_id_is_a_fail(tmp_path):
-    eq = [{"doc": "AISC_358_22", "eq_id": "5.7-2", "part": "standard", "latex": "M_{pr} = C_{pr} R_y F_y Z_e & & ( 5 . 7 - 1 )"}]
+    """A record filed under 5.7-2 whose LaTeX carries the printed label of 5.7-1 -- and 5.7-1 is a real
+    equation in the same document -- is the wrong text under that id. When the printed label names no
+    equation the document has, it is far more often the OCR dropping a separator, and the audit says so
+    as INFO (latex-id-token-mangled) rather than failing a corpus over its own line noise."""
+    eq = [{"doc": "AISC_358_22", "eq_id": "5.7-2", "part": "standard", "latex": "M_{pr} = C_{pr} R_y F_y Z_e & & ( 5 . 7 - 1 )"},
+          {"doc": "AISC_358_22", "eq_id": "5.7-1", "part": "standard", "latex": "M_{f} = M_{pr} + V_{u} S_h & & ( 5 . 7 - 1 )"}]
     ws = _workspace(tmp_path, [_sec("5.1", 45)], equations=eq)
     assert "latex-wrong-equation" in _codes(audit(ws, smoke=False), "FAIL")
+    # the same mislabel with no such other equation in the document: noise, not a wrong equation
+    (tmp_path / "b").mkdir()
+    ws2 = _workspace(tmp_path / "b", [_sec("5.1", 45)], equations=eq[:1])
+    rep = audit(ws2, smoke=False)
+    assert "latex-wrong-equation" not in _codes(rep, "FAIL") and "latex-id-token-mangled" in _codes(rep, "INFO")
 
 
 def test_a_table_of_contents_with_an_id_is_a_fail(tmp_path):
