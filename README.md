@@ -1,10 +1,17 @@
-# Steltic Grok Bot - turn Grok Bot into your structural steel design assistant
+# Steltic Grok Bot
 
-No external RAG required, everything is done inside Grok Bot.
+[![License: MIT](https://img.shields.io/badge/License-MIT-orange.svg)](LICENSE)
+
+![Steltic Grok Bot](docs/img/social_grokbot.png)
+
+No external RAG required, everything is done inside Grok Bot. Run Steltic inside Grok Bot: four bots that query
+your own converted specifications and design, check and report steel buildings.
 
 This repository is the **whole Steltic Grok Bot setup**: four bots that work together so you can start designing buildings and running nonlinear checks. It is **standards-free**. The seven copyrighted specifications are **not** included in any form — no PDFs, no converted text, no spec indexes. Each site supplies its own licensed PDFs and converts them locally with the tooling here. See `NOTICE.md`.
 
-## For videos and demonstrations see [stelticai.com](https://stelticai.com)
+- **Video:** [Steltic in Grok Bot](https://www.youtube.com/watch?v=cTsz1ZBZpXE).
+- **Prompts and setup:** [stelticai.com](https://stelticai.com/#how-to-build-steltic-grok).
+- **More examples:** worked buildings with reports and 3D models at [stelticai.com](https://stelticai.com).
 
 ## What's in the repo
 
